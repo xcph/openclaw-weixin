@@ -18,7 +18,7 @@ export function getSyncBufFilePath(accountId: string): string {
 }
 
 /** Legacy single-account syncbuf (pre multi-account): `.openclaw-weixin-sync/default.json`. */
-function getLegacySyncBufDefaultJsonPath(): string {
+export function getLegacySyncBufDefaultJsonPath(): string {
   return path.join(
     resolveStateDir(),
     "agents",
@@ -27,6 +27,92 @@ function getLegacySyncBufDefaultJsonPath(): string {
     ".openclaw-weixin-sync",
     "default.json",
   );
+}
+
+/** Paths where sync cursor might live for this logical account (primary, compat raw-id, legacy). */
+export function listSyncBufCandidatePaths(accountId: string): string[] {
+  const id = accountId.trim();
+  const paths = [getSyncBufFilePath(id)];
+  const rawId = deriveRawAccountId(id);
+  if (rawId) {
+    paths.push(path.join(resolveAccountsDir(), `${rawId}.sync.json`));
+  }
+  paths.push(getLegacySyncBufDefaultJsonPath());
+  return paths;
+}
+
+/** Best-effort mtime from persisted credential JSON(s) — bumps on QR login / token save. */
+export function getWeixinAccountCredentialRevisionMs(accountId: string): number {
+  const id = accountId.trim();
+  if (!id) return 0;
+  let max = 0;
+  const candidates = [path.join(resolveAccountsDir(), `${id}.json`)];
+  const rawId = deriveRawAccountId(id);
+  if (rawId) {
+    candidates.push(path.join(resolveAccountsDir(), `${rawId}.json`));
+  }
+  for (const filePath of candidates) {
+    try {
+      if (!fs.existsSync(filePath)) continue;
+      max = Math.max(max, fs.statSync(filePath).mtimeMs);
+      const parsed = JSON.parse(fs.readFileSync(filePath, "utf-8")) as { savedAt?: string };
+      const savedMs = parsed.savedAt ? Date.parse(parsed.savedAt) : Number.NaN;
+      if (!Number.isNaN(savedMs)) {
+        max = Math.max(max, savedMs);
+      }
+    } catch {
+      // ignore
+    }
+  }
+  return max;
+}
+
+/** Latest mtime among primary + compat sync cursor files (not legacy singleton — avoids cross-account skew). */
+function getPerAccountSyncCursorMaxMtimeMs(accountId: string): number {
+  let max = 0;
+  const id = accountId.trim();
+  const paths = [getSyncBufFilePath(id)];
+  const rawId = deriveRawAccountId(id);
+  if (rawId) {
+    paths.push(path.join(resolveAccountsDir(), `${rawId}.sync.json`));
+  }
+  for (const fp of paths) {
+    try {
+      if (fs.existsSync(fp)) {
+        max = Math.max(max, fs.statSync(fp).mtimeMs);
+      }
+    } catch {
+      // ignore
+    }
+  }
+  return max;
+}
+
+/** Max mtime among per-account sync files plus legacy singleton (same ordering as load fallback). */
+export function getEffectiveSyncCursorMaxMtimeMs(accountId: string): number {
+  let legacyMs = 0;
+  try {
+    const lp = getLegacySyncBufDefaultJsonPath();
+    if (fs.existsSync(lp)) {
+      legacyMs = fs.statSync(lp).mtimeMs;
+    }
+  } catch {
+    // ignore
+  }
+  return Math.max(getPerAccountSyncCursorMaxMtimeMs(accountId.trim()), legacyMs);
+}
+
+/**
+ * When credentials were saved/relogged after sync cursor files were last touched,
+ * continuing long-poll with that cursor yields errcode -14 against the new token.
+ */
+export function shouldDiscardPersistedSyncBufForStaleCredentials(accountId: string): boolean {
+  const credRev = getWeixinAccountCredentialRevisionMs(accountId.trim());
+  if (credRev <= 0) {
+    return false;
+  }
+  const syncRev = getEffectiveSyncCursorMaxMtimeMs(accountId);
+  return credRev > syncRev;
 }
 
 export type SyncBufData = {
@@ -78,4 +164,23 @@ export function saveGetUpdatesBuf(filePath: string, getUpdatesBuf: string): void
   const dir = path.dirname(filePath);
   fs.mkdirSync(dir, { recursive: true });
   fs.writeFileSync(filePath, JSON.stringify({ get_updates_buf: getUpdatesBuf }, null, 0), "utf-8");
+}
+
+/**
+ * Drop persisted long-poll cursor for this account so the next monitor uses an empty
+ * `get_updates_buf`. Call after re-login / token refresh — stale buf + new token often yields errcode -14.
+ */
+export function clearPersistedGetUpdatesBufForAccount(accountId: string): void {
+  const id = accountId.trim();
+  if (!id) {
+    return;
+  }
+  const paths = listSyncBufCandidatePaths(id);
+  for (const fp of paths) {
+    try {
+      fs.unlinkSync(fp);
+    } catch {
+      // ENOENT or permission — ignore
+    }
+  }
 }

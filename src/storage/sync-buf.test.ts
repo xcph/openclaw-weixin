@@ -97,3 +97,91 @@ describe("saveGetUpdatesBuf", () => {
     expect(fs.existsSync(path.dirname(fp))).toBe(true);
   });
 });
+
+describe("clearPersistedGetUpdatesBufForAccount", () => {
+  it("removes primary and compat sync files", async () => {
+    const {
+      clearPersistedGetUpdatesBufForAccount,
+      getSyncBufFilePath,
+      loadGetUpdatesBuf,
+    } = await loadModule();
+    const dir = path.join(tmpDir, "openclaw-weixin", "accounts");
+    fs.mkdirSync(dir, { recursive: true });
+    const primary = getSyncBufFilePath("abc-im-bot");
+    fs.writeFileSync(primary, JSON.stringify({ get_updates_buf: "x" }));
+    const compat = path.join(dir, "abc@im.bot.sync.json");
+    fs.writeFileSync(compat, JSON.stringify({ get_updates_buf: "y" }));
+
+    clearPersistedGetUpdatesBufForAccount("abc-im-bot");
+
+    expect(fs.existsSync(primary)).toBe(false);
+    expect(fs.existsSync(compat)).toBe(false);
+    expect(loadGetUpdatesBuf(primary)).toBeUndefined();
+  });
+
+  it("no-op when accountId empty", async () => {
+    const { clearPersistedGetUpdatesBufForAccount } = await loadModule();
+    expect(() => clearPersistedGetUpdatesBufForAccount("  ")).not.toThrow();
+  });
+
+  it("removes legacy singleton sync file", async () => {
+    const { clearPersistedGetUpdatesBufForAccount, getLegacySyncBufDefaultJsonPath } =
+      await loadModule();
+    const legacyDir = path.join(tmpDir, "agents", "default", "sessions", ".openclaw-weixin-sync");
+    fs.mkdirSync(legacyDir, { recursive: true });
+    const legacyPath = getLegacySyncBufDefaultJsonPath();
+    fs.writeFileSync(legacyPath, JSON.stringify({ get_updates_buf: "legacy" }));
+    clearPersistedGetUpdatesBufForAccount("abc-im-bot");
+    expect(fs.existsSync(legacyPath)).toBe(false);
+  });
+});
+
+describe("shouldDiscardPersistedSyncBufForStaleCredentials", () => {
+  it("returns true when savedAt is newer than sync cursor mtimes", async () => {
+    const {
+      shouldDiscardPersistedSyncBufForStaleCredentials,
+      getSyncBufFilePath,
+      saveGetUpdatesBuf,
+    } = await loadModule();
+    const accountsDir = path.join(tmpDir, "openclaw-weixin", "accounts");
+    fs.mkdirSync(accountsDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(accountsDir, "acc-im-bot.json"),
+      JSON.stringify({
+        token: "t",
+        savedAt: new Date("2035-06-01T12:00:00Z").toISOString(),
+      }),
+      "utf-8",
+    );
+    const syncFp = getSyncBufFilePath("acc-im-bot");
+    saveGetUpdatesBuf(syncFp, "oldbuf");
+    const stale = new Date("2020-01-01T00:00:00Z");
+    fs.utimesSync(syncFp, stale, stale);
+
+    expect(shouldDiscardPersistedSyncBufForStaleCredentials("acc-im-bot")).toBe(true);
+  });
+
+  it("returns false when sync file was touched after credential savedAt", async () => {
+    const {
+      shouldDiscardPersistedSyncBufForStaleCredentials,
+      getSyncBufFilePath,
+      saveGetUpdatesBuf,
+    } = await loadModule();
+    const accountsDir = path.join(tmpDir, "openclaw-weixin", "accounts");
+    fs.mkdirSync(accountsDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(accountsDir, "acc-im-bot.json"),
+      JSON.stringify({
+        token: "t",
+        savedAt: new Date("2020-06-01T12:00:00Z").toISOString(),
+      }),
+      "utf-8",
+    );
+    const syncFp = getSyncBufFilePath("acc-im-bot");
+    saveGetUpdatesBuf(syncFp, "freshbuf");
+    const newer = new Date("2035-01-01T00:00:00Z");
+    fs.utimesSync(syncFp, newer, newer);
+
+    expect(shouldDiscardPersistedSyncBufForStaleCredentials("acc-im-bot")).toBe(false);
+  });
+});

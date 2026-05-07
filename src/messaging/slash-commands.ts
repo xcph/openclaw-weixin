@@ -4,11 +4,13 @@
  * 支持的指令：
  * - /echo <message>         直接回复消息（不经过 AI），并附带通道耗时统计
  * - /toggle-debug           开关 debug 模式，启用后每条 AI 回复追加全链路耗时
+ * - /weixin-login [new|bind|add]   配对用户发起扫码登录：默认续登当前账号；带参数时为绑定新账号（后台等待，不阻塞其它消息）
  */
 import type { WeixinApiOptions } from "../api/api.js";
 import { logger } from "../util/logger.js";
 
 import { toggleDebugMode, isDebugMode } from "./debug-mode.js";
+import { parseWeixinLoginIntent, scheduleWeixinChatLogin } from "./weixin-login-slash.js";
 import { sendMessageWeixin } from "./send.js";
 
 export interface SlashCommandResult {
@@ -22,6 +24,8 @@ export interface SlashCommandContext {
   baseUrl: string;
   token?: string;
   accountId: string;
+  /** CDN 基址，用于下发二维码图片 */
+  cdnBaseUrl: string;
   log: (msg: string) => void;
   errLog: (msg: string) => void;
 }
@@ -93,6 +97,11 @@ export async function handleSlashCommand(
             ? "Debug 模式已开启"
             : "Debug 模式已关闭",
         );
+        return { handled: true };
+      }
+      case "/weixin-login": {
+        const intent = parseWeixinLoginIntent(args);
+        await scheduleWeixinChatLogin(ctx, intent);
         return { handled: true };
       }
       default:

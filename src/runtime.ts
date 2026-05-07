@@ -24,35 +24,14 @@ export function getWeixinRuntime(): PluginRuntime {
   return pluginRuntime;
 }
 
-const WAIT_INTERVAL_MS = 100;
-const DEFAULT_TIMEOUT_MS = 10_000;
-
-/**
- * Waits for the Weixin runtime to be initialized (async polling).
- */
-export async function waitForWeixinRuntime(
-  timeoutMs = DEFAULT_TIMEOUT_MS,
-): Promise<PluginRuntime> {
-  const start = Date.now();
-  while (!pluginRuntime) {
-    if (Date.now() - start > timeoutMs) {
-      throw new Error("Weixin runtime initialization timeout");
-    }
-    await new Promise((resolve) => setTimeout(resolve, WAIT_INTERVAL_MS));
-  }
-  return pluginRuntime;
-}
-
 /**
  * Resolves `PluginRuntime["channel"]` for the long-poll monitor.
  *
- * Prefer the gateway-injected `channelRuntime` on `ChannelGatewayContext` when present (avoids
- * races with the module-global from `register()`). Fall back to the global set by `setWeixinRuntime()`,
- * then to a short wait for legacy hosts.
+ * Prefer `ChannelGatewayContext.channelRuntime` from the gateway (required for production).
+ * Fall back to `register()`'s global only for narrow/test setups without full gateway wiring.
  */
 export async function resolveWeixinChannelRuntime(params: {
   channelRuntime?: PluginChannelRuntime;
-  waitTimeoutMs?: number;
 }): Promise<PluginChannelRuntime> {
   if (params.channelRuntime) {
     logger.debug("[runtime] channelRuntime from gateway context");
@@ -62,9 +41,8 @@ export async function resolveWeixinChannelRuntime(params: {
     logger.debug("[runtime] channelRuntime from register() global");
     return pluginRuntime.channel;
   }
-  logger.warn(
-    "[runtime] no channelRuntime on ctx and no global runtime yet; waiting for register()",
+  throw new Error(
+    "openclaw-weixin: missing channel runtime — gateway must inject ctx.channelRuntime when starting this external channel " +
+      "(ensure OpenClaw createChannelManager.resolveChannelRuntime is configured)",
   );
-  const pr = await waitForWeixinRuntime(params.waitTimeoutMs ?? DEFAULT_TIMEOUT_MS);
-  return pr.channel;
 }

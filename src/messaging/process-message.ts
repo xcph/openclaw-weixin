@@ -11,7 +11,7 @@ import type { PluginRuntime } from "openclaw/plugin-sdk/core";
 import { sendTyping } from "../api/api.js";
 import type { WeixinMessage } from "../api/types.js";
 import { MessageItemType, TypingStatus } from "../api/types.js";
-import { loadWeixinAccount } from "../auth/accounts.js";
+import { loadWeixinAccount, resolveWeixinAccount } from "../auth/accounts.js";
 import { readFrameworkAllowFromList } from "../auth/pairing.js";
 import { downloadRemoteImageToTemp } from "../cdn/upload.js";
 import { downloadMediaFromItem } from "../media/media-download.js";
@@ -31,6 +31,7 @@ import { sendWeixinMediaFile } from "./send-media.js";
 import { StreamingMarkdownFilter } from "./markdown-filter.js";
 import { sendMessageWeixin } from "./send.js";
 import { handleSlashCommand } from "./slash-commands.js";
+import { createWeixinReasoningBroadcast } from "./reasoning-broadcast.js";
 
 const MEDIA_OUTBOUND_TEMP_DIR = path.join(resolvePreferredOpenClawTmpDir(), "weixin/media/outbound-temp");
 
@@ -87,6 +88,7 @@ export async function processOneMessage(
       baseUrl: deps.baseUrl,
       token: deps.token,
       accountId: deps.accountId,
+      cdnBaseUrl: deps.cdnBaseUrl,
       log: deps.log,
       errLog: deps.errLog,
     }, receivedAt, full.create_time_ms);
@@ -271,6 +273,26 @@ export async function processOneMessage(
   }
   const humanDelay = deps.channelRuntime.reply.resolveHumanDelayConfig(deps.config, route.agentId);
 
+  const resolvedAccount = resolveWeixinAccount(deps.config, deps.accountId);
+  const reasoningBroadcast = resolvedAccount.showReasoning
+    ? createWeixinReasoningBroadcast({
+        sendText: async (reasoningText) => {
+          const f = new StreamingMarkdownFilter();
+          const filtered = f.feed(reasoningText) + f.flush();
+          await sendMessageWeixin({
+            to: ctx.To,
+            text: filtered,
+            opts: {
+              baseUrl: deps.baseUrl,
+              token: deps.token,
+              contextToken,
+            },
+          });
+        },
+        log: logger.withAccount(deps.accountId),
+      })
+    : null;
+
   const hasTypingTicket = Boolean(deps.typingTicket);
   const typingCallbacks = createTypingCallbacks({
     start: hasTypingTicket
@@ -419,7 +441,16 @@ export async function processOneMessage(
           ctx: finalized,
           cfg: deps.config,
           dispatcher,
-          replyOptions: { ...replyOptions, disableBlockStreaming: true },
+          replyOptions: {
+            ...replyOptions,
+            disableBlockStreaming: true,
+            ...(reasoningBroadcast
+              ? {
+                  onReasoningStream: reasoningBroadcast.onReasoningStream,
+                  onReasoningEnd: reasoningBroadcast.onReasoningEnd,
+                }
+              : {}),
+          },
         }),
     });
     logger.debug(`dispatchReplyFromConfig: done agentId=${route.agentId ?? "(none)"}`);
@@ -429,6 +460,7 @@ export async function processOneMessage(
     );
     throw err;
   } finally {
+    reasoningBroadcast?.dispose();
     markDispatchIdle();
 
     logger.info(

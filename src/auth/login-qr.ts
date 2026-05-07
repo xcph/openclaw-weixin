@@ -45,6 +45,31 @@ interface StatusResponse {
   redirect_host?: string;
 }
 
+/** Normalize ilink API origin (hostname-only allowed). */
+function normalizeIlinkBaseUrl(raw: string | undefined): string | undefined {
+  const t = raw?.trim();
+  if (!t) {
+    return undefined;
+  }
+  if (t.startsWith("http://") || t.startsWith("https://")) {
+    return t.replace(/\/+$/, "");
+  }
+  return `https://${t.replace(/^\/+/, "").replace(/\/+$/, "")}`;
+}
+
+/**
+ * Bot token is bound to the IDC we polled (`scaned_but_redirect` → currentApiBaseUrl).
+ * If `confirmed` omits `baseurl`, falling back to the fixed national URL breaks getUpdates (-14).
+ */
+function pickConfirmedLoginBaseUrl(status: StatusResponse, login: ActiveLogin): string {
+  const fromServer = normalizeIlinkBaseUrl(status.baseurl);
+  if (fromServer) {
+    return fromServer;
+  }
+  const effective = login.currentApiBaseUrl ?? FIXED_BASE_URL;
+  return effective.replace(/\/+$/, "");
+}
+
 function isLoginFresh(login: ActiveLogin): boolean {
   return Date.now() - login.startedAt < ACTIVE_LOGIN_TTL_MS;
 }
@@ -296,7 +321,7 @@ export async function waitForWeixinLogin(opts: {
             connected: true,
             botToken: statusResponse.bot_token,
             accountId: statusResponse.ilink_bot_id,
-            baseUrl: statusResponse.baseurl,
+            baseUrl: pickConfirmedLoginBaseUrl(statusResponse, activeLogin),
             userId: statusResponse.ilink_user_id,
             message: "✅ 与微信连接成功！",
           };

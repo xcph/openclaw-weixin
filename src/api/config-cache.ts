@@ -5,6 +5,19 @@ export interface CachedConfig {
   typingTicket: string;
 }
 
+export type WeixinApiCredentials = { baseUrl: string; token?: string };
+export type WeixinApiCredentialsProvider = WeixinApiCredentials | (() => WeixinApiCredentials);
+
+function asCredentialsGetter(
+  provider: WeixinApiCredentialsProvider,
+): () => WeixinApiCredentials {
+  if (typeof provider === "function") {
+    return provider;
+  }
+  const fixed = provider;
+  return () => fixed;
+}
+
 const CONFIG_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 const CONFIG_CACHE_INITIAL_RETRY_MS = 2_000;
 const CONFIG_CACHE_MAX_RETRY_MS = 60 * 60 * 1000;
@@ -22,11 +35,11 @@ interface ConfigCacheEntry {
  */
 export class WeixinConfigManager {
   private cache = new Map<string, ConfigCacheEntry>();
+  private readonly getApiOpts: () => WeixinApiCredentials;
 
-  constructor(
-    private apiOpts: { baseUrl: string; token?: string },
-    private log: (msg: string) => void,
-  ) {}
+  constructor(credentials: WeixinApiCredentialsProvider, private log: (msg: string) => void) {
+    this.getApiOpts = asCredentialsGetter(credentials);
+  }
 
   async getForUser(userId: string, contextToken?: string): Promise<CachedConfig> {
     const now = Date.now();
@@ -36,9 +49,10 @@ export class WeixinConfigManager {
     if (shouldFetch) {
       let fetchOk = false;
       try {
+        const { baseUrl, token } = this.getApiOpts();
         const resp = await getConfig({
-          baseUrl: this.apiOpts.baseUrl,
-          token: this.apiOpts.token,
+          baseUrl,
+          token,
           ilinkUserId: userId,
           contextToken,
         });

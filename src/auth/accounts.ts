@@ -4,6 +4,7 @@ import path from "node:path";
 import { normalizeAccountId } from "openclaw/plugin-sdk/account-id";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/core";
 
+import { resumeSession } from "../api/session-guard.js";
 import { getWeixinRuntime } from "../runtime.js";
 import { resolveStateDir } from "../storage/state-dir.js";
 import { resolveFrameworkAllowFromPath } from "./pairing.js";
@@ -205,9 +206,22 @@ export function saveWeixinAccount(
   const filePath = resolveAccountPath(accountId);
   fs.writeFileSync(filePath, JSON.stringify(data, null, 2), "utf-8");
   try {
+    const fd = fs.openSync(filePath, "r+");
+    try {
+      fs.fsyncSync(fd);
+    } finally {
+      fs.closeSync(fd);
+    }
+  } catch {
+    // best-effort (some FS ignore fsync)
+  }
+  try {
     fs.chmodSync(filePath, 0o600);
   } catch {
     // best-effort
+  }
+  if (update.token?.trim()) {
+    resumeSession(accountId);
   }
 }
 
@@ -224,6 +238,7 @@ export function clearWeixinAccount(accountId: string): void {
     `${accountId}.json`,
     `${accountId}.sync.json`,
     `${accountId}.context-tokens.json`,
+    `${accountId}.session-pause.json`,
   ];
   for (const file of accountFiles) {
     try {
@@ -291,8 +306,13 @@ export function loadConfigRouteTag(accountId?: string): string | undefined {
 }
 
 /**
- * Bump `channels.openclaw-weixin.channelConfigUpdatedAt` in openclaw.json on each successful login
- * so the gateway reloads config from disk (no empty `accounts: {}` placeholder).
+ * Bump `channels.openclaw-weixin.channelConfigUpdatedAt` in openclaw.json (forces gateway config reload).
+ *
+ * **Do not call this immediately after QR login inside a running gateway:** writing `openclaw.json`
+ * triggers channel hot-reload (see plugin `reload.configPrefixes`), which races with the post-login
+ * `startChannel` / monitor startup.
+ * Credentials already live under `~/.openclaw/openclaw-weixin/`; reserve this helper for operator-driven
+ * reloads or tooling outside the login hot path.
  */
 export async function triggerWeixinChannelReload(): Promise<void> {
   try {
@@ -330,6 +350,11 @@ export type ResolvedWeixinAccount = {
   /** true when a token has been obtained via QR login. */
   configured: boolean;
   name?: string;
+  /**
+   * When true, stream model reasoning into Weixin as plain-text messages (with prefix)
+   * and log summaries on the gateway channel logger.
+   */
+  showReasoning: boolean;
 };
 
 type WeixinAccountConfig = {
@@ -338,13 +363,28 @@ type WeixinAccountConfig = {
   cdnBaseUrl?: string;
   /** Optional SKRouteTag source; read from openclaw.json when `accountId` is passed to `loadConfigRouteTag`. */
   routeTag?: number | string;
+  /** Opt-in: mirror reasoning/thinking tokens into the chat and gateway logs. */
+  showReasoning?: boolean;
 };
 
 type WeixinSectionConfig = WeixinAccountConfig & {
   accounts?: Record<string, WeixinAccountConfig>;
-  /** Written on each successful login; see triggerWeixinChannelReload. */
+  /** Written when tooling bumps channel config for reload; login saves credentials under state dir. */
   channelConfigUpdatedAt?: string;
 };
+
+function resolveShowReasoningForAccount(
+  section: WeixinSectionConfig | undefined,
+  accountCfg: WeixinAccountConfig,
+): boolean {
+  if (accountCfg.showReasoning === true) {
+    return true;
+  }
+  if (accountCfg.showReasoning === false) {
+    return false;
+  }
+  return section?.showReasoning === true;
+}
 
 /** List accountIds from the index file (written at QR login). */
 export function listWeixinAccountIds(_cfg: OpenClawConfig): string[] {
@@ -376,5 +416,6 @@ export function resolveWeixinAccount(
     enabled: accountCfg.enabled !== false,
     configured: Boolean(token),
     name: accountCfg.name?.trim() || undefined,
+    showReasoning: resolveShowReasoningForAccount(section, accountCfg),
   };
 }

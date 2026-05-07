@@ -26,6 +26,17 @@ describe("WeixinConfigSchema", () => {
     expect(result.enabled).toBe(false);
   });
 
+  it("accepts showReasoning on section and per-account", () => {
+    const section = WeixinConfigSchema.parse({ showReasoning: true });
+    expect(section.showReasoning).toBe(true);
+    const mixed = WeixinConfigSchema.parse({
+      showReasoning: true,
+      accounts: { acc1: { showReasoning: false } },
+    });
+    expect(mixed.showReasoning).toBe(true);
+    expect(mixed.accounts?.acc1?.showReasoning).toBe(false);
+  });
+
   it("accepts accounts map", () => {
     const result = WeixinConfigSchema.parse({
       accounts: {

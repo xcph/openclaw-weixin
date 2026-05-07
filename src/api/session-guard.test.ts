@@ -1,8 +1,12 @@
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 import {
   SESSION_EXPIRED_ERRCODE,
   pauseSession,
+  resumeSession,
   isSessionPaused,
   getRemainingPauseMs,
   assertSessionActive,
@@ -14,13 +18,27 @@ vi.mock("../util/logger.js", () => ({
 }));
 
 describe("session-guard", () => {
+  let stateTmp = "";
+
   beforeEach(() => {
-    _resetForTest();
-    vi.useFakeTimers();
+    stateTmp = fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-weixin-session-guard-"));
+    vi.stubEnv("OPENCLAW_STATE_DIR", stateTmp);
+    _resetForTest(["acc1", "acc2", "ghost"]);
+    vi.useFakeTimers({ now: new Date("2026-05-07T12:00:00Z") });
   });
 
   afterEach(() => {
     vi.useRealTimers();
+    vi.unstubAllEnvs();
+    fs.rmSync(stateTmp, { recursive: true, force: true });
+  });
+
+  it("resumeSession clears pause for linked raw vs normalized Weixin ids", () => {
+    pauseSession("hex-im-bot");
+    expect(isSessionPaused("hex-im-bot")).toBe(true);
+    resumeSession("hex@im.bot");
+    expect(isSessionPaused("hex-im-bot")).toBe(false);
+    expect(getRemainingPauseMs("hex@im.bot")).toBe(0);
   });
 
   it("exports SESSION_EXPIRED_ERRCODE as -14", () => {
@@ -33,6 +51,19 @@ describe("session-guard", () => {
 
   it("getRemainingPauseMs returns 0 when no pause set", () => {
     expect(getRemainingPauseMs("acc1")).toBe(0);
+  });
+
+  it("resumeSession clears pause immediately", () => {
+    pauseSession("acc1");
+    expect(isSessionPaused("acc1")).toBe(true);
+    resumeSession("acc1");
+    expect(isSessionPaused("acc1")).toBe(false);
+    expect(getRemainingPauseMs("acc1")).toBe(0);
+  });
+
+  it("resumeSession on non-paused account is harmless", () => {
+    expect(() => resumeSession("ghost")).not.toThrow();
+    expect(isSessionPaused("ghost")).toBe(false);
   });
 
   it("pauseSession activates a 1-hour pause", () => {

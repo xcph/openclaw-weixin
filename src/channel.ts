@@ -10,12 +10,12 @@ import {
   saveWeixinAccount,
   listWeixinAccountIds,
   resolveWeixinAccount,
-  triggerWeixinChannelReload,
   clearStaleAccountsForUserId,
+  triggerWeixinChannelReload,
   DEFAULT_BASE_URL,
 } from "./auth/accounts.js";
 import type { ResolvedWeixinAccount } from "./auth/accounts.js";
-import { assertSessionActive } from "./api/session-guard.js";
+import { assertSessionActive, resumeSession } from "./api/session-guard.js";
 import { getContextToken, findAccountIdsByContextToken, restoreContextTokens, clearContextTokensForAccount } from "./messaging/inbound.js";
 import { logger } from "./util/logger.js";
 import {
@@ -24,12 +24,20 @@ import {
   waitForWeixinLogin,
 } from "./auth/login-qr.js";
 import type { WeixinQrStartResult, WeixinQrWaitResult } from "./auth/login-qr.js";
+import { printWeixinLoginQrToConsole } from "./auth/print-login-qr.js";
 // Lazy-imported inside startAccount to avoid pulling in the monitor -> process-message ->
 // command-auth chain during plugin registration, which can re-enter plugin/provider registry
 // resolution before the account actually starts.
 import { sendWeixinMediaFile } from "./messaging/send-media.js";
 import { sendMessageWeixin, StreamingMarkdownFilter } from "./messaging/send.js";
 import { downloadRemoteImageToTemp } from "./cdn/upload.js";
+import { clearPersistedGetUpdatesBufForAccount } from "./storage/sync-buf.js";
+
+/** Narrow auth.login for plugins whose host `openclaw` types lag behind `reconcileAccountId` support. */
+type WeixinAuthLoginFn = NonNullable<
+  NonNullable<ChannelPlugin<ResolvedWeixinAccount>["auth"]>["login"]
+>;
+type WeixinAuthLoginParams = Parameters<WeixinAuthLoginFn>[0];
 
 /** Returns true when mediaUrl refers to a local filesystem path (absolute or relative). */
 function isLocalFilePath(mediaUrl: string): boolean {
@@ -40,6 +48,22 @@ function isLocalFilePath(mediaUrl: string): boolean {
 function isRemoteUrl(mediaUrl: string): boolean {
   return mediaUrl.startsWith("http://") || mediaUrl.startsWith("https://");
 }
+
+/**
+ * {@link ChannelPlugin} `config` surface required by OpenClaw
+ * (`normalizeRegisteredChannelPlugin`: `listAccountIds` + `resolveAccount`).
+ */
+const weixinChannelConfig: ChannelPlugin<ResolvedWeixinAccount>["config"] = {
+  listAccountIds: (cfg) => listWeixinAccountIds(cfg),
+  resolveAccount: (cfg, accountId) => resolveWeixinAccount(cfg, accountId),
+  isConfigured: (account, _cfg) => account.configured,
+  describeAccount: (account, _cfg) => ({
+    accountId: account.accountId,
+    name: account.name,
+    enabled: account.enabled,
+    configured: account.configured,
+  }),
+};
 
 const MEDIA_OUTBOUND_TEMP_DIR = path.join(resolvePreferredOpenClawTmpDir(), "weixin/media/outbound-temp");
 
@@ -147,7 +171,13 @@ export const weixinPlugin: ChannelPlugin<ResolvedWeixinAccount> = {
     schema: {
       type: "object",
       additionalProperties: false,
-      properties: {},
+      properties: {
+        showReasoning: {
+          type: "boolean",
+          description:
+            "When true, forward model reasoning/thinking to Weixin as plain-text messages (💭 prefix) and log previews on the gateway. Per-account `accounts.<id>.showReasoning` overrides this default.",
+        },
+      },
     },
   },
   capabilities: {
@@ -177,17 +207,7 @@ export const weixinPlugin: ChannelPlugin<ResolvedWeixinAccount> = {
     ],
   },
   reload: { configPrefixes: ["channels.openclaw-weixin"] },
-  config: {
-    listAccountIds: (cfg) => listWeixinAccountIds(cfg),
-    resolveAccount: (cfg, accountId) => resolveWeixinAccount(cfg, accountId),
-    isConfigured: (account) => account.configured,
-    describeAccount: (account) => ({
-      accountId: account.accountId,
-      name: account.name,
-      enabled: account.enabled,
-      configured: account.configured,
-    }),
-  },
+  config: weixinChannelConfig,
   outbound: {
     deliveryMode: "direct",
     textChunkLimit: 4000,
@@ -270,7 +290,8 @@ export const weixinPlugin: ChannelPlugin<ResolvedWeixinAccount> = {
     }),
   },
   auth: {
-    login: async ({ cfg, accountId, verbose, runtime }) => {
+    login: (async (params: WeixinAuthLoginParams) => {
+      const { cfg, accountId, verbose, runtime } = params;
       const account = resolveWeixinAccount(cfg, accountId);
 
       const log = (msg: string) => {
@@ -293,24 +314,15 @@ export const weixinPlugin: ChannelPlugin<ResolvedWeixinAccount> = {
         throw new Error(startResult.message);
       }
 
-      log(`\n使用微信扫描以下二维码，以完成连接：\n`);
-      try {
-        const qrcodeterminal = await import("qrcode-terminal");
-        await new Promise<void>((resolve) => {
-          qrcodeterminal.default.generate(startResult.qrcodeUrl!, { small: true }, (qr: string) => {
-            console.log(qr);
-            log(`如果二维码未能成功展示，请用浏览器打开以下链接扫码：`);
-            log(startResult.qrcodeUrl!);
-            resolve();
-          });
-        });
-      } catch (err) {
-        logger.warn(
-          `auth.login: qrcode-terminal unavailable, falling back to URL err=${String(err)}`,
-        );
-        log(`二维码未加载成功，请用浏览器打开以下链接扫码：`);
-        log(startResult.qrcodeUrl!);
-      }
+      log(`\n使用微信扫描下方二维码完成连接（若终端无图形，将打印 ASCII 码或链接）：\n`);
+      const writeStdout =
+        runtime &&
+        typeof runtime === "object" &&
+        "writeStdout" in runtime &&
+        typeof (runtime as { writeStdout?: unknown }).writeStdout === "function"
+          ? (runtime as { writeStdout: (value: string) => void }).writeStdout.bind(runtime)
+          : undefined;
+      await printWeixinLoginQrToConsole(startResult.qrcodeUrl!, log, writeStdout);
 
       const loginTimeoutMs = 480_000;
       log(`\n等待连接结果...\n`);
@@ -337,13 +349,22 @@ export const weixinPlugin: ChannelPlugin<ResolvedWeixinAccount> = {
           if (waitResult.userId) {
             clearStaleAccountsForUserId(normalizedId, waitResult.userId, clearContextTokensForAccount);
           }
-          void triggerWeixinChannelReload();
+          clearPersistedGetUpdatesBufForAccount(normalizedId);
+          resumeSession(normalizedId);
+          await triggerWeixinChannelReload().catch((err) =>
+            logger.warn(`triggerWeixinChannelReload: ${String(err)}`),
+          );
           log(`\n✅ 与微信连接成功！`);
+          log(
+            `凭证已写入状态目录；网关若已在运行，长轮询会在下一轮自动读取新 token（通常无需重启）。`,
+          );
+          return { reconcileAccountId: normalizedId };
         } catch (err) {
           logger.error(
             `auth.login: failed to save account data accountId=${waitResult.accountId} err=${String(err)}`,
           );
           log(`⚠️  保存账号数据失败: ${String(err)}`);
+          throw err instanceof Error ? err : new Error(String(err));
         }
       } else {
         logger.warn(
@@ -352,8 +373,10 @@ export const weixinPlugin: ChannelPlugin<ResolvedWeixinAccount> = {
         // log(waitResult.message);
         throw new Error(waitResult.message);
       }
-    },
+    }) as unknown as WeixinAuthLoginFn,
   },
+  /** 供网关 `web.login.start` / `web.login.wait` 发现本通道（与 WhatsApp 等一致）。 */
+  gatewayMethods: ["web.login.start", "web.login.wait"],
   gateway: {
     startAccount: async (ctx) => {
       logger.debug(`startAccount entry`);
@@ -383,7 +406,7 @@ export const weixinPlugin: ChannelPlugin<ResolvedWeixinAccount> = {
         throw new Error("weixin not configured: missing token");
       }
 
-      ctx.log?.info?.(`[${account.accountId}] starting weixin provider (${DEFAULT_BASE_URL})`);
+      ctx.log?.info?.(`[${account.accountId}] starting weixin provider (${account.baseUrl})`);
 
       const logPath = aLog.getLogFilePath();
       ctx.log?.info?.(`[${account.accountId}] weixin logs: ${logPath}`);
@@ -396,6 +419,7 @@ export const weixinPlugin: ChannelPlugin<ResolvedWeixinAccount> = {
         accountId: account.accountId,
         config: ctx.cfg,
         runtime: ctx.runtime,
+        channelRuntime: ctx.channelRuntime,
         abortSignal: ctx.abortSignal,
         setStatus: ctx.setStatus,
       });
@@ -442,7 +466,11 @@ export const weixinPlugin: ChannelPlugin<ResolvedWeixinAccount> = {
           if (result.userId) {
             clearStaleAccountsForUserId(normalizedId, result.userId, clearContextTokensForAccount);
           }
-          triggerWeixinChannelReload();
+          clearPersistedGetUpdatesBufForAccount(normalizedId);
+          resumeSession(normalizedId);
+          await triggerWeixinChannelReload().catch((err) =>
+            logger.warn(`triggerWeixinChannelReload: ${String(err)}`),
+          );
           logger.info(`loginWithQrWait: saved account data for accountId=${normalizedId}`);
         } catch (err) {
           logger.error(`loginWithQrWait: failed to save account data err=${String(err)}`);

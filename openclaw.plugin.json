@@ -1,12 +1,39 @@
 {
   "id": "openclaw-weixin",
   "version": "2.1.7",
-  "channels": [
-    "openclaw-weixin"
-  ],
+  "activation": {
+    "onStartup": false
+  },
+  "channels": ["openclaw-weixin"],
   "configSchema": {
     "type": "object",
     "additionalProperties": false,
     "properties": {}
+  },
+  "channelConfigs": {
+    "openclaw-weixin": {
+      "schema": {
+        "type": "object",
+        "additionalProperties": true,
+        "properties": {
+          "name": { "type": "string" },
+          "enabled": { "type": "boolean" },
+          "baseUrl": { "type": "string" },
+          "cdnBaseUrl": { "type": "string" },
+          "routeTag": { "type": "number" },
+          "accounts": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "channelConfigUpdatedAt": { "type": "string" }
+        }
+      },
+      "label": "openclaw-weixin",
+      "description": "Weixin channel (long-poll)",
+      "blurb": "微信通道（腾讯云 openclaw-weixin）",
+      "docsPath": "/channels/openclaw-weixin",
+      "docsLabel": "openclaw-weixin",
+      "aliases": ["weixin", "wx"]
+    }
   }
 }

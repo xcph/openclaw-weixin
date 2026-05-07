@@ -5,10 +5,19 @@ import type { SlashCommandContext } from "./slash-commands.js";
 import { isDebugMode, _resetForTest as resetDebugMode } from "./debug-mode.js";
 
 const mockSendMessageWeixin = vi.hoisted(() => vi.fn().mockResolvedValue({ messageId: "test-id" }));
+const mockScheduleWeixinChatLogin = vi.hoisted(() => vi.fn().mockResolvedValue(undefined));
 
 vi.mock("./send.js", () => ({
   sendMessageWeixin: mockSendMessageWeixin,
 }));
+
+vi.mock("./weixin-login-slash.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./weixin-login-slash.js")>();
+  return {
+    ...actual,
+    scheduleWeixinChatLogin: mockScheduleWeixinChatLogin,
+  };
+});
 
 vi.mock("../util/logger.js", () => ({
   logger: {
@@ -25,12 +34,14 @@ describe("handleSlashCommand", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     resetDebugMode();
+    mockScheduleWeixinChatLogin.mockResolvedValue(undefined);
     ctx = {
       to: "user123",
       contextToken: "token123",
       baseUrl: "https://api.example.com",
       token: "bot-token",
       accountId: "acc1",
+      cdnBaseUrl: "https://cdn.example.com",
       log: vi.fn(),
       errLog: vi.fn(),
     };
@@ -140,5 +151,24 @@ describe("handleSlashCommand", () => {
     const result = await handleSlashCommand("/TOGGLE-DEBUG", ctx, Date.now());
     expect(result.handled).toBe(true);
     expect(isDebugMode("acc1")).toBe(true);
+  });
+
+  it("handles /weixin-login by scheduling chat login", async () => {
+    const result = await handleSlashCommand("/weixin-login", ctx, Date.now());
+    expect(result.handled).toBe(true);
+    expect(mockScheduleWeixinChatLogin).toHaveBeenCalledTimes(1);
+    expect(mockScheduleWeixinChatLogin).toHaveBeenCalledWith(ctx, "renew");
+  });
+
+  it("/weixin-login new schedules bind-new intent", async () => {
+    const result = await handleSlashCommand("/weixin-login new", ctx, Date.now());
+    expect(result.handled).toBe(true);
+    expect(mockScheduleWeixinChatLogin).toHaveBeenCalledWith(ctx, "bind-new");
+  });
+
+  it("/weixin-login is case-insensitive", async () => {
+    const result = await handleSlashCommand("/Weixin-Login", ctx, Date.now());
+    expect(result.handled).toBe(true);
+    expect(mockScheduleWeixinChatLogin).toHaveBeenCalled();
   });
 });

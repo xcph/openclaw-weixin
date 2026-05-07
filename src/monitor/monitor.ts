@@ -1,12 +1,30 @@
+import fs from "node:fs";
+import path from "node:path";
+
 import type { ChannelAccountSnapshot } from "openclaw/plugin-sdk/channel-contract";
-import type { PluginRuntime } from "openclaw/plugin-sdk/core";
+import type { OpenClawConfig, PluginRuntime } from "openclaw/plugin-sdk/core";
 
 import { getUpdates } from "../api/api.js";
 import { WeixinConfigManager } from "../api/config-cache.js";
-import { SESSION_EXPIRED_ERRCODE, pauseSession, getRemainingPauseMs } from "../api/session-guard.js";
+import {
+  SESSION_EXPIRED_ERRCODE,
+  pauseSession,
+  resumeSession,
+  getRemainingPauseMs,
+  isSessionPaused,
+} from "../api/session-guard.js";
+import { loadWeixinAccount, resolveWeixinAccount } from "../auth/accounts.js";
 import { processOneMessage } from "../messaging/process-message.js";
-import { getWeixinRuntime, waitForWeixinRuntime } from "../runtime.js";
-import { getSyncBufFilePath, loadGetUpdatesBuf, saveGetUpdatesBuf } from "../storage/sync-buf.js";
+import { resolveWeixinChannelRuntime } from "../runtime.js";
+import {
+  clearPersistedGetUpdatesBufForAccount,
+  getSyncBufFilePath,
+  loadGetUpdatesBuf,
+  saveGetUpdatesBuf,
+  shouldDiscardPersistedSyncBufForStaleCredentials,
+} from "../storage/sync-buf.js";
+import { resolveStateDir } from "../storage/state-dir.js";
+import { formatFetchRelatedError } from "../util/fetch-error.js";
 import { logger } from "../util/logger.js";
 import type { Logger } from "../util/logger.js";
 import { redactBody } from "../util/redact.js";
@@ -15,15 +33,93 @@ const DEFAULT_LONG_POLL_TIMEOUT_MS = 35_000;
 const MAX_CONSECUTIVE_FAILURES = 3;
 const BACKOFF_DELAY_MS = 30_000;
 const RETRY_DELAY_MS = 2_000;
+/** While session cooldown is active, wake periodically so gateway health sees liveness and re-login can shorten wait. */
+const SESSION_PAUSE_HEARTBEAT_MS = 10_000;
+/**
+ * Most `-14` responses recover after clearing `get_updates_buf` + disk sync (new token + stale cursor).
+ * Only enter the long pause after several failures — avoids useless “60 min” stalls after QR login.
+ */
+const SESSION_EXPIRY_RECOVERY_ATTEMPTS_BEFORE_PAUSE = 8;
+const SESSION_EXPIRY_RETRY_MS = 1_500;
+
+function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const t = setTimeout(resolve, ms);
+    signal?.addEventListener(
+      "abort",
+      () => {
+        clearTimeout(t);
+        reject(new Error("aborted"));
+      },
+      { once: true },
+    );
+  });
+}
+
+function normalizeApiErrCode(value: unknown): number | undefined {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value;
+  }
+  if (typeof value === "string" && value.trim() !== "") {
+    const n = Number(value.trim());
+    return Number.isFinite(n) ? n : undefined;
+  }
+  return undefined;
+}
+
+function resolveWeixinAccountCredentialPath(accountId: string): string {
+  return path.join(resolveStateDir(), "openclaw-weixin", "accounts", `${accountId.trim()}.json`);
+}
+
+/** Brief pause when credentials were just written — avoids reading stale JSON over slow mounts. */
+async function maybeDelayAfterFreshCredentialWrite(
+  accountId: string,
+  abortSignal?: AbortSignal,
+): Promise<void> {
+  try {
+    const p = resolveWeixinAccountCredentialPath(accountId);
+    if (!fs.existsSync(p)) return;
+    const ageMs = Date.now() - fs.statSync(p).mtimeMs;
+    if (ageMs >= 0 && ageMs < 5000) {
+      await sleep(900, abortSignal);
+    }
+  } catch {
+    /* ignore */
+  }
+}
+
+/** Merge disk credentials the same way as gateway `resolveAccount` (channel plugin contract). */
+function resolveLiveWeixinApiCredentials(
+  cfg: OpenClawConfig,
+  accountId: string,
+  fallback: { baseUrl: string; token?: string },
+): { baseUrl: string; token?: string } {
+  try {
+    const resolved = resolveWeixinAccount(cfg, accountId);
+    return {
+      baseUrl: resolved.baseUrl?.trim() || fallback.baseUrl,
+      token: resolved.token?.trim() || fallback.token,
+    };
+  } catch (err) {
+    logger.warn(`resolveLiveWeixinApiCredentials: resolveWeixinAccount failed id=${accountId} err=${String(err)}`);
+    const live = loadWeixinAccount(accountId);
+    return {
+      baseUrl: live?.baseUrl?.trim() || fallback.baseUrl,
+      token: live?.token?.trim() || fallback.token,
+    };
+  }
+}
 
 export type MonitorWeixinOpts = {
   baseUrl: string;
   cdnBaseUrl: string;
   token?: string;
   accountId: string;
+  /** Injected by gateway `startAccount` — avoids relying on module-global runtime during reload. */
+  channelRuntime?: PluginRuntime["channel"];
   /** When non-empty, only messages whose from_user_id is in this list are processed. */
   allowFrom?: string[];
-  config: import("openclaw/plugin-sdk/core").OpenClawConfig;
+  config: OpenClawConfig;
   runtime?: { log?: (msg: string) => void; error?: (msg: string) => void };
   abortSignal?: AbortSignal;
   longPollTimeoutMs?: number;
@@ -50,20 +146,22 @@ export async function monitorWeixinProvider(opts: MonitorWeixinOpts): Promise<vo
   const errLog = opts.runtime?.error ?? ((m: string) => log(m));
   const aLog: Logger = logger.withAccount(accountId);
 
-  aLog.info(`waiting for Weixin runtime...`);
+  aLog.info(`resolving Weixin channel runtime (gateway-injected preferred)...`);
   let channelRuntime: PluginRuntime["channel"];
   try {
-    const pluginRuntime = await waitForWeixinRuntime();
-    channelRuntime = pluginRuntime.channel;
-    aLog.info(`Weixin runtime acquired, channelRuntime type: ${typeof channelRuntime}`);
+    channelRuntime = await resolveWeixinChannelRuntime({
+      channelRuntime: opts.channelRuntime,
+    });
+    aLog.info(`Weixin channel runtime acquired, channelRuntime type: ${typeof channelRuntime}`);
   } catch (err) {
-    aLog.error(`waitForWeixinRuntime() failed: ${String(err)}`);
+    aLog.error(`resolveWeixinChannelRuntime() failed: ${String(err)}`);
     throw err;
   }
 
-  log(`weixin monitor started (${baseUrl}, account=${accountId})`);
+  const bootApi = resolveLiveWeixinApiCredentials(config, accountId, { baseUrl, token });
+  log(`weixin monitor started (${bootApi.baseUrl}, account=${accountId})`);
   aLog.info(
-    `Monitor started: baseUrl=${baseUrl} timeoutMs=${longPollTimeoutMs ?? DEFAULT_LONG_POLL_TIMEOUT_MS}`,
+    `Monitor started: baseUrl=${bootApi.baseUrl} timeoutMs=${longPollTimeoutMs ?? DEFAULT_LONG_POLL_TIMEOUT_MS}`,
   );
 
   const syncFilePath = getSyncBufFilePath(accountId);
@@ -72,7 +170,12 @@ export async function monitorWeixinProvider(opts: MonitorWeixinOpts): Promise<vo
   const previousGetUpdatesBuf = loadGetUpdatesBuf(syncFilePath);
   let getUpdatesBuf = previousGetUpdatesBuf ?? "";
 
-  if (previousGetUpdatesBuf) {
+  if (shouldDiscardPersistedSyncBufForStaleCredentials(accountId)) {
+    getUpdatesBuf = "";
+    clearPersistedGetUpdatesBufForAccount(accountId);
+    log(`[weixin] credential newer than sync cursor — cleared stale get_updates_buf`);
+    aLog.info(`discarded persisted sync buf (credential newer than cursor; avoids errcode -14)`);
+  } else if (previousGetUpdatesBuf) {
     log(`[weixin] resuming from previous sync buf (${getUpdatesBuf.length} bytes)`);
     aLog.debug(`Using previous get_updates_buf (${getUpdatesBuf.length} bytes)`);
   } else {
@@ -80,21 +183,53 @@ export async function monitorWeixinProvider(opts: MonitorWeixinOpts): Promise<vo
     aLog.info(`No previous get_updates_buf found, starting fresh`);
   }
 
-  const configManager = new WeixinConfigManager({ baseUrl, token }, log);
+  const configManager = new WeixinConfigManager(
+    () => resolveLiveWeixinApiCredentials(config, accountId, { baseUrl, token }),
+    log,
+  );
 
   let nextTimeoutMs = longPollTimeoutMs ?? DEFAULT_LONG_POLL_TIMEOUT_MS;
   let consecutiveFailures = 0;
+  /** Detect token/baseUrl refresh from disk (e.g. CLI QR login) — stale cursor + new token yields errcode -14. */
+  let credentialFingerprint = "";
+  /** Counts `-14` streak without a successful poll — cleared on success or credential change. */
+  let sessionExpiryRecoveryAttempts = 0;
+
+  /** First iteration only — settle credentials file visibility after QR login + channels.start. */
+  let appliedFreshCredentialDelay = false;
 
   while (!abortSignal?.aborted) {
     try {
+      if (!appliedFreshCredentialDelay) {
+        appliedFreshCredentialDelay = true;
+        await maybeDelayAfterFreshCredentialWrite(accountId, abortSignal);
+      }
+
+      const api = resolveLiveWeixinApiCredentials(config, accountId, { baseUrl, token });
+      const fp = `${api.baseUrl}\0${api.token ?? ""}`;
+      if (credentialFingerprint !== "" && fp !== credentialFingerprint) {
+        getUpdatesBuf = "";
+        clearPersistedGetUpdatesBufForAccount(accountId);
+        sessionExpiryRecoveryAttempts = 0;
+        aLog.info(
+          `credentials changed on disk for accountId=${accountId}, cleared get_updates_buf (avoid -14 after re-login)`,
+        );
+      }
+      credentialFingerprint = fp;
+
+      if (!api.token?.trim()) {
+        aLog.warn(`getUpdates: missing bot token on disk/config for accountId=${accountId} — expect errcode -14`);
+      }
+
       aLog.debug(
         `getUpdates: get_updates_buf=${getUpdatesBuf.substring(0, 50)}..., timeoutMs=${nextTimeoutMs}`,
       );
       const resp = await getUpdates({
-        baseUrl,
-        token,
+        baseUrl: api.baseUrl,
+        token: api.token,
         get_updates_buf: getUpdatesBuf,
         timeoutMs: nextTimeoutMs,
+        abortSignal,
       });
       aLog.debug(
         `getUpdates response: ret=${resp.ret}, msgs=${resp.msgs?.length ?? 0}, get_updates_buf_length=${resp.get_updates_buf?.length ?? 0}`,
@@ -104,24 +239,48 @@ export async function monitorWeixinProvider(opts: MonitorWeixinOpts): Promise<vo
         nextTimeoutMs = resp.longpolling_timeout_ms;
         aLog.debug(`Updated next poll timeout: ${nextTimeoutMs}ms`);
       }
+      const retNum = normalizeApiErrCode(resp.ret);
+      const errNum = normalizeApiErrCode(resp.errcode);
       const isApiError =
-        (resp.ret !== undefined && resp.ret !== 0) ||
-        (resp.errcode !== undefined && resp.errcode !== 0);
+        (retNum !== undefined && retNum !== 0) || (errNum !== undefined && errNum !== 0);
       if (isApiError) {
         const isSessionExpired =
-          resp.errcode === SESSION_EXPIRED_ERRCODE || resp.ret === SESSION_EXPIRED_ERRCODE;
+          errNum === SESSION_EXPIRED_ERRCODE || retNum === SESSION_EXPIRED_ERRCODE;
 
         if (isSessionExpired) {
+          resumeSession(accountId);
+          getUpdatesBuf = "";
+          clearPersistedGetUpdatesBufForAccount(accountId);
+          sessionExpiryRecoveryAttempts += 1;
+
+          if (sessionExpiryRecoveryAttempts <= SESSION_EXPIRY_RECOVERY_ATTEMPTS_BEFORE_PAUSE) {
+            errLog(
+              `weixin getUpdates: accountId=${accountId} errcode -14 base=${api.baseUrl} tokenLen=${api.token?.length ?? 0} errmsg=${resp.errmsg ?? ""} — cleared sync cursor, retry ${sessionExpiryRecoveryAttempts}/${SESSION_EXPIRY_RECOVERY_ATTEMPTS_BEFORE_PAUSE} (${SESSION_EXPIRY_RETRY_MS}ms)`,
+            );
+            aLog.warn(
+              `getUpdates: session/expiry mismatch base=${api.baseUrl} errmsg=${resp.errmsg ?? ""} (errcode=${String(resp.errcode)} ret=${String(resp.ret)}); cleared cursor`,
+            );
+            consecutiveFailures = 0;
+            await sleep(SESSION_EXPIRY_RETRY_MS, abortSignal);
+            continue;
+          }
+
+          sessionExpiryRecoveryAttempts = 0;
           pauseSession(accountId);
           const pauseMs = getRemainingPauseMs(accountId);
           errLog(
-            `weixin getUpdates: session expired (errcode ${SESSION_EXPIRED_ERRCODE}), pausing bot for ${Math.ceil(pauseMs / 60_000)} min`,
+            `weixin getUpdates: accountId=${accountId} errcode -14 persists after ${SESSION_EXPIRY_RECOVERY_ATTEMPTS_BEFORE_PAUSE} cursor resets base=${api.baseUrl} tokenLen=${api.token?.length ?? 0} errmsg=${resp.errmsg ?? ""} — backing off ~${Math.ceil(pauseMs / 60_000)} min (run: openclaw channels login --channel openclaw-weixin; ensure OPENCLAW_STATE_DIR matches gateway)`,
           );
           aLog.error(
-            `getUpdates: session expired (errcode=${resp.errcode} ret=${resp.ret}), pausing all requests for ${Math.ceil(pauseMs / 60_000)} min`,
+            `getUpdates: persistent -14 base=${api.baseUrl} errmsg=${resp.errmsg ?? ""} (errcode=${resp.errcode} ret=${resp.ret})`,
           );
           consecutiveFailures = 0;
-          await sleep(pauseMs, abortSignal);
+          await sleepWhileSessionPaused({
+            accountId,
+            abortSignal,
+            setStatus,
+            aLog,
+          });
           continue;
         }
 
@@ -147,6 +306,7 @@ export async function monitorWeixinProvider(opts: MonitorWeixinOpts): Promise<vo
         continue;
       }
       consecutiveFailures = 0;
+      sessionExpiryRecoveryAttempts = 0;
       setStatus?.({ accountId, lastEventAt: Date.now() });
       if (resp.get_updates_buf != null && resp.get_updates_buf !== "") {
         saveGetUpdatesBuf(syncFilePath, resp.get_updates_buf);
@@ -172,9 +332,9 @@ export async function monitorWeixinProvider(opts: MonitorWeixinOpts): Promise<vo
           accountId,
           config,
           channelRuntime,
-          baseUrl,
+          baseUrl: api.baseUrl,
           cdnBaseUrl,
-          token,
+          token: api.token,
           typingTicket: cachedConfig.typingTicket,
           log: opts.runtime?.log ?? (() => {}),
           errLog,
@@ -186,10 +346,11 @@ export async function monitorWeixinProvider(opts: MonitorWeixinOpts): Promise<vo
         return;
       }
       consecutiveFailures += 1;
+      const detail = formatFetchRelatedError(err);
       errLog(
-        `weixin getUpdates error (${consecutiveFailures}/${MAX_CONSECUTIVE_FAILURES}): ${String(err)}`,
+        `weixin getUpdates error (${consecutiveFailures}/${MAX_CONSECUTIVE_FAILURES}): ${detail}`,
       );
-      aLog.error(`getUpdates error: ${String(err)}, stack=${(err as Error).stack}`);
+      aLog.error(`getUpdates error: ${detail}, stack=${(err as Error).stack}`);
       if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
         errLog(
           `weixin getUpdates: ${MAX_CONSECUTIVE_FAILURES} consecutive failures, backing off 30s`,
@@ -207,16 +368,27 @@ export async function monitorWeixinProvider(opts: MonitorWeixinOpts): Promise<vo
   aLog.info(`Monitor ended`);
 }
 
-function sleep(ms: number, signal?: AbortSignal): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const t = setTimeout(resolve, ms);
-    signal?.addEventListener(
-      "abort",
-      () => {
-        clearTimeout(t);
-        reject(new Error("aborted"));
-      },
-      { once: true },
-    );
-  });
+async function sleepWhileSessionPaused(params: {
+  accountId: string;
+  abortSignal?: AbortSignal;
+  setStatus?: MonitorWeixinOpts["setStatus"];
+  aLog: Logger;
+}): Promise<void> {
+  const { accountId, abortSignal, setStatus, aLog } = params;
+  while (isSessionPaused(accountId)) {
+    setStatus?.({ accountId, lastEventAt: Date.now() });
+    const remaining = getRemainingPauseMs(accountId);
+    if (remaining <= 0) {
+      break;
+    }
+    const slice = Math.min(SESSION_PAUSE_HEARTBEAT_MS, remaining);
+    try {
+      await sleep(slice, abortSignal);
+    } catch {
+      return;
+    }
+  }
+  if (!isSessionPaused(accountId)) {
+    aLog.info(`session pause cleared or expired, resuming getUpdates for accountId=${accountId}`);
+  }
 }

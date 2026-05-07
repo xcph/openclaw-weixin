@@ -1,5 +1,7 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
+import http from "node:http";
+import https from "node:https";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -163,9 +165,117 @@ export async function apiGetFetch(params: {
   }
 }
 
+function createAbortError(message: string): Error {
+  const err = new Error(message);
+  err.name = "AbortError";
+  return err;
+}
+
 /**
- * Common fetch wrapper: POST JSON to a Weixin API endpoint with timeout + abort.
- * Returns the raw response text on success; throws on HTTP error or timeout.
+ * POST JSON via Node core http/https (not global `fetch`).
+ *
+ * Some peers respond with headers that fail undici's strict validation:
+ * `InvalidArgumentError: invalid content-length header` (UND_ERR_INVALID_ARG).
+ */
+function postViaNativeHttp(
+  url: URL,
+  headers: Record<string, string>,
+  bodyUtf8: string,
+  timeoutMs: number,
+  abortSignal: AbortSignal | undefined,
+  label: string,
+): Promise<string> {
+  if (abortSignal?.aborted) {
+    return Promise.reject(createAbortError("Aborted"));
+  }
+
+  const bodyBuf = Buffer.from(bodyUtf8, "utf-8");
+  const isHttps = url.protocol === "https:";
+  if (!isHttps && url.protocol !== "http:") {
+    return Promise.reject(new Error(`${label}: unsupported URL scheme ${url.protocol}`));
+  }
+  const lib = isHttps ? https : http;
+  const defaultPort = isHttps ? 443 : 80;
+
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    let timeoutTimer: ReturnType<typeof setTimeout> | undefined;
+    let req: http.ClientRequest | undefined;
+
+    const cleanup = () => {
+      if (timeoutTimer !== undefined) {
+        clearTimeout(timeoutTimer);
+        timeoutTimer = undefined;
+      }
+      abortSignal?.removeEventListener("abort", onAbort);
+    };
+
+    const finalizeReject = (err: unknown) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      cleanup();
+      reject(err);
+    };
+
+    const finalizeResolve = (v: string) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      cleanup();
+      resolve(v);
+    };
+
+    const onAbort = () => {
+      req?.destroy(createAbortError("Aborted"));
+    };
+
+    abortSignal?.addEventListener("abort", onAbort, { once: true });
+
+    req = lib.request(
+      {
+        hostname: url.hostname,
+        port: url.port ? Number(url.port) : defaultPort,
+        path: `${url.pathname}${url.search}`,
+        method: "POST",
+        headers,
+      },
+      (res) => {
+        const chunks: Buffer[] = [];
+        res.on("data", (chunk: Buffer) => chunks.push(chunk));
+        res.on("error", (e) => finalizeReject(e));
+        res.on("end", () => {
+          try {
+            const rawText = Buffer.concat(chunks).toString("utf-8");
+            logger.debug(`${label} status=${res.statusCode} raw=${redactBody(rawText)}`);
+            const code = res.statusCode ?? 0;
+            if (code >= 400) {
+              finalizeReject(new Error(`${label} ${code}: ${rawText}`));
+              return;
+            }
+            finalizeResolve(rawText);
+          } catch (e) {
+            finalizeReject(e);
+          }
+        });
+      },
+    );
+
+    req.on("error", (e) => finalizeReject(e));
+
+    timeoutTimer = setTimeout(() => {
+      req?.destroy(createAbortError("Request timeout"));
+    }, timeoutMs);
+
+    req.write(bodyBuf);
+    req.end();
+  });
+}
+
+/**
+ * POST JSON to a Weixin API endpoint with timeout + optional gateway abort.
  */
 async function apiPostFetch(params: {
   baseUrl: string;
@@ -174,32 +284,15 @@ async function apiPostFetch(params: {
   token?: string;
   timeoutMs: number;
   label: string;
+  /** When the gateway/channel stops, tear down the socket immediately (in addition to `timeoutMs`). */
+  abortSignal?: AbortSignal;
 }): Promise<string> {
   const base = ensureTrailingSlash(params.baseUrl);
   const url = new URL(params.endpoint, base);
   const hdrs = buildHeaders({ token: params.token, body: params.body });
   logger.debug(`POST ${redactUrl(url.toString())} body=${redactBody(params.body)}`);
 
-  const controller = new AbortController();
-  const t = setTimeout(() => controller.abort(), params.timeoutMs);
-  try {
-    const res = await fetch(url.toString(), {
-      method: "POST",
-      headers: hdrs,
-      body: params.body,
-      signal: controller.signal,
-    });
-    clearTimeout(t);
-    const rawText = await res.text();
-    logger.debug(`${params.label} status=${res.status} raw=${redactBody(rawText)}`);
-    if (!res.ok) {
-      throw new Error(`${params.label} ${res.status}: ${rawText}`);
-    }
-    return rawText;
-  } catch (err) {
-    clearTimeout(t);
-    throw err;
-  }
+  return postViaNativeHttp(url, hdrs, params.body, params.timeoutMs, params.abortSignal, params.label);
 }
 
 /**
@@ -213,24 +306,36 @@ export async function getUpdates(
     baseUrl: string;
     token?: string;
     timeoutMs?: number;
+    abortSignal?: AbortSignal;
   },
 ): Promise<GetUpdatesResp> {
   const timeout = params.timeoutMs ?? DEFAULT_LONG_POLL_TIMEOUT_MS;
   try {
+    const buf = params.get_updates_buf ?? "";
+    const payload: Record<string, unknown> = {
+      base_info: buildBaseInfo(),
+    };
+    // First poll after QR bind: many gateways treat omitted cursor differently from "".
+    if (buf.length > 0) {
+      payload.get_updates_buf = buf;
+      payload.sync_buf = buf;
+    }
+
     const rawText = await apiPostFetch({
       baseUrl: params.baseUrl,
       endpoint: "ilink/bot/getupdates",
-      body: JSON.stringify({
-        get_updates_buf: params.get_updates_buf ?? "",
-        base_info: buildBaseInfo(),
-      }),
+      body: JSON.stringify(payload),
       token: params.token,
       timeoutMs: timeout,
       label: "getUpdates",
+      abortSignal: params.abortSignal,
     });
     const resp: GetUpdatesResp = JSON.parse(rawText);
     return resp;
   } catch (err) {
+    if (params.abortSignal?.aborted) {
+      throw err;
+    }
     // Long-poll timeout is normal; return empty response so caller can retry
     if (err instanceof Error && err.name === "AbortError") {
       logger.debug(`getUpdates: client-side timeout after ${timeout}ms, returning empty response`);
