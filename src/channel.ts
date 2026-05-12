@@ -172,10 +172,20 @@ export const weixinPlugin: ChannelPlugin<ResolvedWeixinAccount> = {
       type: "object",
       additionalProperties: false,
       properties: {
+        showThinking: {
+          type: "boolean",
+          description:
+            "When true, forward model thinking/reasoning stream to Weixin as plain-text messages (💭 prefix). Per-account `accounts.<id>.showThinking` overrides. If omitted, falls back to legacy `showReasoning`.",
+        },
         showReasoning: {
           type: "boolean",
           description:
-            "When true, forward model reasoning/thinking to Weixin as plain-text messages (💭 prefix) and log previews on the gateway. Per-account `accounts.<id>.showReasoning` overrides this default.",
+            "Deprecated alias for `showThinking`. When true, forward model reasoning/thinking to Weixin as plain-text messages (💭 prefix) and log previews on the gateway. Per-account `accounts.<id>.showReasoning` overrides section default only when `showThinking` is unset.",
+        },
+        showTools: {
+          type: "boolean",
+          description:
+            "When false, suppress outbound tool-call summary messages to Weixin. Default true (summaries are sent). Per-account `accounts.<id>.showTools` overrides this default.",
         },
       },
     },

@@ -19,6 +19,21 @@ import { sendMessageWeixin } from "./send.js";
 import { handleSlashCommand } from "./slash-commands.js";
 import { createWeixinReasoningBroadcast } from "./reasoning-broadcast.js";
 const MEDIA_OUTBOUND_TEMP_DIR = path.join(resolvePreferredOpenClawTmpDir(), "weixin/media/outbound-temp");
+/** When tool summaries are disabled, still deliver exec-approval envelopes (matches host `resolveToolDeliveryPayload`). */
+function shouldSuppressToolOutbound(payload, showTools) {
+    if (showTools) {
+        return false;
+    }
+    const execApproval = payload.channelData &&
+        typeof payload.channelData === "object" &&
+        !Array.isArray(payload.channelData)
+        ? payload.channelData.execApproval
+        : undefined;
+    if (execApproval && typeof execApproval === "object") {
+        return false;
+    }
+    return true;
+}
 /** Extract text body from item_list (for slash command detection). */
 function extractTextBody(itemList) {
     if (!itemList?.length)
@@ -180,7 +195,7 @@ export async function processOneMessage(full, deps) {
     }
     const humanDelay = deps.channelRuntime.reply.resolveHumanDelayConfig(deps.config, route.agentId);
     const resolvedAccount = resolveWeixinAccount(deps.config, deps.accountId);
-    const reasoningBroadcast = resolvedAccount.showReasoning
+    const reasoningBroadcast = resolvedAccount.showThinking
         ? createWeixinReasoningBroadcast({
             sendText: async (reasoningText) => {
                 const f = new StreamingMarkdownFilter();
@@ -231,7 +246,11 @@ export async function processOneMessage(full, deps) {
     const { dispatcher, replyOptions, markDispatchIdle } = deps.channelRuntime.reply.createReplyDispatcherWithTyping({
         humanDelay,
         typingCallbacks,
-        deliver: async (payload) => {
+        deliver: async (payload, info) => {
+            if (info.kind === "tool" && shouldSuppressToolOutbound(payload, resolvedAccount.showTools)) {
+                logger.debug(`outbound: skip tool summary (showTools=false) to=${ctx.To} contextToken=${redactToken(contextToken)}`);
+                return;
+            }
             const rawText = payload.text ?? "";
             const text = (() => {
                 const f = new StreamingMarkdownFilter();

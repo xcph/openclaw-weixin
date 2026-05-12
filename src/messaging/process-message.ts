@@ -35,6 +35,26 @@ import { createWeixinReasoningBroadcast } from "./reasoning-broadcast.js";
 
 const MEDIA_OUTBOUND_TEMP_DIR = path.join(resolvePreferredOpenClawTmpDir(), "weixin/media/outbound-temp");
 
+/** When tool summaries are disabled, still deliver exec-approval envelopes (matches host `resolveToolDeliveryPayload`). */
+function shouldSuppressToolOutbound(
+  payload: { channelData?: Record<string, unknown> },
+  showTools: boolean,
+): boolean {
+  if (showTools) {
+    return false;
+  }
+  const execApproval =
+    payload.channelData &&
+    typeof payload.channelData === "object" &&
+    !Array.isArray(payload.channelData)
+      ? payload.channelData.execApproval
+      : undefined;
+  if (execApproval && typeof execApproval === "object") {
+    return false;
+  }
+  return true;
+}
+
 /** Dependencies for processOneMessage, injected by the monitor loop. */
 export type ProcessMessageDeps = {
   accountId: string;
@@ -274,7 +294,7 @@ export async function processOneMessage(
   const humanDelay = deps.channelRuntime.reply.resolveHumanDelayConfig(deps.config, route.agentId);
 
   const resolvedAccount = resolveWeixinAccount(deps.config, deps.accountId);
-  const reasoningBroadcast = resolvedAccount.showReasoning
+  const reasoningBroadcast = resolvedAccount.showThinking
     ? createWeixinReasoningBroadcast({
         sendText: async (reasoningText) => {
           const f = new StreamingMarkdownFilter();
@@ -331,7 +351,13 @@ export async function processOneMessage(
     deps.channelRuntime.reply.createReplyDispatcherWithTyping({
       humanDelay,
       typingCallbacks,
-      deliver: async (payload) => {
+      deliver: async (payload, info) => {
+        if (info.kind === "tool" && shouldSuppressToolOutbound(payload, resolvedAccount.showTools)) {
+          logger.debug(
+            `outbound: skip tool summary (showTools=false) to=${ctx.To} contextToken=${redactToken(contextToken)}`,
+          );
+          return;
+        }
         const rawText = payload.text ?? "";
         const text = (() => {
           const f = new StreamingMarkdownFilter();

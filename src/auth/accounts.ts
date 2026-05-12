@@ -350,10 +350,14 @@ export type ResolvedWeixinAccount = {
   /** true when a token has been obtained via QR login. */
   configured: boolean;
   name?: string;
+  /** When true, stream model thinking/reasoning into Weixin (💭 prefix). Alias: `showReasoning`. */
+  showThinking: boolean;
   /**
-   * When true, stream model reasoning into Weixin as plain-text messages (with prefix)
-   * and log summaries on the gateway channel logger.
+   * When true, forward tool-call summary lines to Weixin (`dispatch` kind `tool`).
+   * Default true.
    */
+  showTools: boolean;
+  /** @deprecated Same as {@link showThinking}. */
   showReasoning: boolean;
 };
 
@@ -363,8 +367,12 @@ type WeixinAccountConfig = {
   cdnBaseUrl?: string;
   /** Optional SKRouteTag source; read from openclaw.json when `accountId` is passed to `loadConfigRouteTag`. */
   routeTag?: number | string;
-  /** Opt-in: mirror reasoning/thinking tokens into the chat and gateway logs. */
+  /** Prefer this name: mirror thinking/reasoning stream into chat + gateway logs. */
+  showThinking?: boolean;
+  /** @deprecated Use `showThinking`. */
   showReasoning?: boolean;
+  /** When false, suppress outbound tool-summary messages. Default true when unset. */
+  showTools?: boolean;
 };
 
 type WeixinSectionConfig = WeixinAccountConfig & {
@@ -373,17 +381,36 @@ type WeixinSectionConfig = WeixinAccountConfig & {
   channelConfigUpdatedAt?: string;
 };
 
-function resolveShowReasoningForAccount(
+function resolveShowThinkingForAccount(
   section: WeixinSectionConfig | undefined,
   accountCfg: WeixinAccountConfig,
 ): boolean {
-  if (accountCfg.showReasoning === true) {
-    return true;
+  if (typeof accountCfg.showThinking === "boolean") {
+    return accountCfg.showThinking;
   }
-  if (accountCfg.showReasoning === false) {
-    return false;
+  if (typeof accountCfg.showReasoning === "boolean") {
+    return accountCfg.showReasoning;
   }
-  return section?.showReasoning === true;
+  if (typeof section?.showThinking === "boolean") {
+    return section.showThinking;
+  }
+  if (typeof section?.showReasoning === "boolean") {
+    return section.showReasoning;
+  }
+  return false;
+}
+
+function resolveShowToolsForAccount(
+  section: WeixinSectionConfig | undefined,
+  accountCfg: WeixinAccountConfig,
+): boolean {
+  if (typeof accountCfg.showTools === "boolean") {
+    return accountCfg.showTools;
+  }
+  if (typeof section?.showTools === "boolean") {
+    return section.showTools;
+  }
+  return true;
 }
 
 /** List accountIds from the index file (written at QR login). */
@@ -416,6 +443,8 @@ export function resolveWeixinAccount(
     enabled: accountCfg.enabled !== false,
     configured: Boolean(token),
     name: accountCfg.name?.trim() || undefined,
-    showReasoning: resolveShowReasoningForAccount(section, accountCfg),
+    showThinking: resolveShowThinkingForAccount(section, accountCfg),
+    showTools: resolveShowToolsForAccount(section, accountCfg),
+    showReasoning: resolveShowThinkingForAccount(section, accountCfg),
   };
 }

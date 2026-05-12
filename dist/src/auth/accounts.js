@@ -307,14 +307,29 @@ export async function triggerWeixinChannelReload() {
         logger.warn(`triggerWeixinChannelReload: failed to update config: ${String(err)}`);
     }
 }
-function resolveShowReasoningForAccount(section, accountCfg) {
-    if (accountCfg.showReasoning === true) {
-        return true;
+function resolveShowThinkingForAccount(section, accountCfg) {
+    if (typeof accountCfg.showThinking === "boolean") {
+        return accountCfg.showThinking;
     }
-    if (accountCfg.showReasoning === false) {
-        return false;
+    if (typeof accountCfg.showReasoning === "boolean") {
+        return accountCfg.showReasoning;
     }
-    return section?.showReasoning === true;
+    if (typeof section?.showThinking === "boolean") {
+        return section.showThinking;
+    }
+    if (typeof section?.showReasoning === "boolean") {
+        return section.showReasoning;
+    }
+    return false;
+}
+function resolveShowToolsForAccount(section, accountCfg) {
+    if (typeof accountCfg.showTools === "boolean") {
+        return accountCfg.showTools;
+    }
+    if (typeof section?.showTools === "boolean") {
+        return section.showTools;
+    }
+    return true;
 }
 /** List accountIds from the index file (written at QR login). */
 export function listWeixinAccountIds(_cfg) {
@@ -340,7 +355,9 @@ export function resolveWeixinAccount(cfg, accountId) {
         enabled: accountCfg.enabled !== false,
         configured: Boolean(token),
         name: accountCfg.name?.trim() || undefined,
-        showReasoning: resolveShowReasoningForAccount(section, accountCfg),
+        showThinking: resolveShowThinkingForAccount(section, accountCfg),
+        showTools: resolveShowToolsForAccount(section, accountCfg),
+        showReasoning: resolveShowThinkingForAccount(section, accountCfg),
     };
 }
 //# sourceMappingURL=accounts.js.map

@@ -12,7 +12,9 @@ const accountProperties = {
     baseUrl: { type: "string", default: DEFAULT_BASE_URL },
     cdnBaseUrl: { type: "string", default: CDN_BASE_URL },
     routeTag: { type: "number" },
+    showThinking: { type: "boolean" },
     showReasoning: { type: "boolean" },
+    showTools: { type: "boolean" },
 };
 export const weixinChannelConfigJsonSchema = {
     type: "object",
@@ -23,7 +25,9 @@ export const weixinChannelConfigJsonSchema = {
         baseUrl: accountProperties.baseUrl,
         cdnBaseUrl: accountProperties.cdnBaseUrl,
         routeTag: accountProperties.routeTag,
+        showThinking: accountProperties.showThinking,
         showReasoning: accountProperties.showReasoning,
+        showTools: accountProperties.showTools,
         accounts: {
             type: "object",
             additionalProperties: {

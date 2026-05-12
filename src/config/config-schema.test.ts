@@ -37,6 +37,18 @@ describe("WeixinConfigSchema", () => {
     expect(mixed.accounts?.acc1?.showReasoning).toBe(false);
   });
 
+  it("accepts showThinking and showTools", () => {
+    const result = WeixinConfigSchema.parse({
+      showThinking: true,
+      showTools: false,
+      accounts: { a: { showTools: true, showThinking: false } },
+    });
+    expect(result.showThinking).toBe(true);
+    expect(result.showTools).toBe(false);
+    expect(result.accounts?.a?.showTools).toBe(true);
+    expect(result.accounts?.a?.showThinking).toBe(false);
+  });
+
   it("accepts accounts map", () => {
     const result = WeixinConfigSchema.parse({
       accounts: {
