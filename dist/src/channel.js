@@ -4,7 +4,7 @@ import { resolvePreferredOpenClawTmpDir } from "openclaw/plugin-sdk/infra-runtim
 import { registerWeixinAccountId, loadWeixinAccount, saveWeixinAccount, listWeixinAccountIds, resolveWeixinAccount, clearStaleAccountsForUserId, triggerWeixinChannelReload, DEFAULT_BASE_URL, } from "./auth/accounts.js";
 import { assertSessionActive, resumeSession } from "./api/session-guard.js";
 import { getContextToken, findAccountIdsByContextToken, restoreContextTokens, clearContextTokensForAccount } from "./messaging/inbound.js";
-import { logger } from "./util/logger.js";
+import { logger, configureWeixinChannelLoggingFromConfig } from "./util/logger.js";
 import { DEFAULT_ILINK_BOT_TYPE, startWeixinLoginWithQr, waitForWeixinLogin, } from "./auth/login-qr.js";
 import { printWeixinLoginQrToConsole } from "./auth/print-login-qr.js";
 // Lazy-imported inside startAccount to avoid pulling in the monitor -> process-message ->
@@ -128,7 +128,11 @@ export const weixinPlugin = {
                 },
                 showTools: {
                     type: "boolean",
-                    description: "When false, suppress outbound tool-call summary messages to Weixin. Default true (summaries are sent). Per-account `accounts.<id>.showTools` overrides this default.",
+                    description: "When false, suppress outbound tool-call summary messages to Weixin (`dispatch` kind `tool`) and suppress embedded runner tool previews that would become channel payloads. Default true (summaries are sent). Per-account `accounts.<id>.showTools` overrides this default.",
+                },
+                verboseLogFile: {
+                    type: "string",
+                    description: "Optional absolute path or `~/…` for a dedicated plaintext weixin log (all levels mirrored here, independent of OPENCLAW_LOG_LEVEL). Overridden by env `OPENCLAW_WEIXIN_LOG_FILE` when set.",
                 },
             },
         },
@@ -317,6 +321,7 @@ export const weixinPlugin = {
                 logger.warn(`gateway.startAccount: called with undefined ctx, skipping`);
                 return;
             }
+            configureWeixinChannelLoggingFromConfig(ctx.cfg);
             const account = ctx.account;
             const aLog = logger.withAccount(account.accountId);
             aLog.debug(`about to call monitorWeixinProvider`);

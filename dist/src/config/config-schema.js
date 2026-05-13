@@ -27,5 +27,7 @@ export const WeixinConfigSchema = weixinAccountSchema.extend({
     showReasoning: z.boolean().optional(),
     /** Default showTools for all accounts unless overridden per-account. */
     showTools: z.boolean().optional(),
+    /** Plaintext verbose log path (absolute or ~/…); all levels mirrored. Env OPENCLAW_WEIXIN_LOG_FILE overrides. */
+    verboseLogFile: z.string().optional(),
 });
 //# sourceMappingURL=config-schema.js.map

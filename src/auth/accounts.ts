@@ -381,6 +381,15 @@ type WeixinSectionConfig = WeixinAccountConfig & {
   channelConfigUpdatedAt?: string;
 };
 
+/** Section-level account defaults excluding nested `accounts` / reload bump fields. */
+function sectionDefaultsForWeixinAccount(section: WeixinSectionConfig | undefined): WeixinAccountConfig {
+  if (!section) {
+    return {};
+  }
+  const { accounts: _a, channelConfigUpdatedAt: _ts, ...rest } = section;
+  return rest;
+}
+
 function resolveShowThinkingForAccount(
   section: WeixinSectionConfig | undefined,
   accountCfg: WeixinAccountConfig,
@@ -429,7 +438,10 @@ export function resolveWeixinAccount(
   }
   const id = normalizeAccountId(raw);
   const section = cfg.channels?.["openclaw-weixin"] as WeixinSectionConfig | undefined;
-  const accountCfg: WeixinAccountConfig = section?.accounts?.[id] ?? section ?? {};
+  const accountCfg: WeixinAccountConfig = {
+    ...sectionDefaultsForWeixinAccount(section),
+    ...(section?.accounts?.[id] ?? {}),
+  };
 
   const accountData = loadWeixinAccount(id);
   const token = accountData?.token?.trim() || undefined;

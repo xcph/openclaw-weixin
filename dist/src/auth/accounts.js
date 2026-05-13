@@ -307,6 +307,14 @@ export async function triggerWeixinChannelReload() {
         logger.warn(`triggerWeixinChannelReload: failed to update config: ${String(err)}`);
     }
 }
+/** Section-level account defaults excluding nested `accounts` / reload bump fields. */
+function sectionDefaultsForWeixinAccount(section) {
+    if (!section) {
+        return {};
+    }
+    const { accounts: _a, channelConfigUpdatedAt: _ts, ...rest } = section;
+    return rest;
+}
 function resolveShowThinkingForAccount(section, accountCfg) {
     if (typeof accountCfg.showThinking === "boolean") {
         return accountCfg.showThinking;
@@ -343,7 +351,10 @@ export function resolveWeixinAccount(cfg, accountId) {
     }
     const id = normalizeAccountId(raw);
     const section = cfg.channels?.["openclaw-weixin"];
-    const accountCfg = section?.accounts?.[id] ?? section ?? {};
+    const accountCfg = {
+        ...sectionDefaultsForWeixinAccount(section),
+        ...(section?.accounts?.[id] ?? {}),
+    };
     const accountData = loadWeixinAccount(id);
     const token = accountData?.token?.trim() || undefined;
     const stateBaseUrl = accountData?.baseUrl?.trim() || "";

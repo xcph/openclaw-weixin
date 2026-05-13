@@ -18,6 +18,7 @@ import { StreamingMarkdownFilter } from "./markdown-filter.js";
 import { sendMessageWeixin } from "./send.js";
 import { handleSlashCommand } from "./slash-commands.js";
 import { createWeixinReasoningBroadcast } from "./reasoning-broadcast.js";
+import { sanitizeAssistantOutboundForChannel } from "./outbound-privacy.js";
 const MEDIA_OUTBOUND_TEMP_DIR = path.join(resolvePreferredOpenClawTmpDir(), "weixin/media/outbound-temp");
 /** When tool summaries are disabled, still deliver exec-approval envelopes (matches host `resolveToolDeliveryPayload`). */
 function shouldSuppressToolOutbound(payload, showTools) {
@@ -195,6 +196,7 @@ export async function processOneMessage(full, deps) {
     }
     const humanDelay = deps.channelRuntime.reply.resolveHumanDelayConfig(deps.config, route.agentId);
     const resolvedAccount = resolveWeixinAccount(deps.config, deps.accountId);
+    logger.debug(`resolved weixin flags: showThinking=${String(resolvedAccount.showThinking)} showTools=${String(resolvedAccount.showTools)} accountId=${deps.accountId}`);
     const reasoningBroadcast = resolvedAccount.showThinking
         ? createWeixinReasoningBroadcast({
             sendText: async (reasoningText) => {
@@ -252,13 +254,17 @@ export async function processOneMessage(full, deps) {
                 return;
             }
             const rawText = payload.text ?? "";
-            const text = (() => {
+            const text = sanitizeAssistantOutboundForChannel((() => {
                 const f = new StreamingMarkdownFilter();
                 return f.feed(rawText) + f.flush();
-            })();
+            })(), resolvedAccount);
             const mediaUrl = payload.mediaUrl ?? payload.mediaUrls?.[0];
             logger.debug(`outbound payload: ${redactBody(JSON.stringify(payload))}`);
             logger.info(`outbound: to=${ctx.To} contextToken=${redactToken(contextToken)} textLen=${text.length} mediaUrl=${mediaUrl ? "present" : "none"}`);
+            if (!mediaUrl && !text.trim()) {
+                logger.debug(`outbound: skip empty body after sanitize (${info.kind}) to=${ctx.To} contextToken=${redactToken(contextToken)}`);
+                return;
+            }
             if (debug) {
                 debugDeliveries.push({
                     textLen: text.length,
@@ -359,6 +365,9 @@ export async function processOneMessage(full, deps) {
                 replyOptions: {
                     ...replyOptions,
                     disableBlockStreaming: true,
+                    /** Host embedded run defaults to verboseLevel for tool summaries when unset; align with channel config. */
+                    shouldEmitToolResult: () => resolvedAccount.showTools,
+                    shouldEmitToolOutput: () => resolvedAccount.showTools,
                     ...(reasoningBroadcast
                         ? {
                             onReasoningStream: reasoningBroadcast.onReasoningStream,

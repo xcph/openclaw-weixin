@@ -28,6 +28,7 @@ export const weixinChannelConfigJsonSchema = {
         showThinking: accountProperties.showThinking,
         showReasoning: accountProperties.showReasoning,
         showTools: accountProperties.showTools,
+        verboseLogFile: { type: "string" },
         accounts: {
             type: "object",
             additionalProperties: {

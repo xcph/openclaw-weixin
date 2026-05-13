@@ -23,6 +23,8 @@ const LEVEL_IDS = {
     FATAL: 6,
 };
 const DEFAULT_LOG_LEVEL = "INFO";
+/** Env: absolute path or `~/…` — mirror every weixin plugin log line here (all levels, plaintext). */
+const ENV_VERBOSE_LOG = process.env.OPENCLAW_WEIXIN_LOG_FILE?.trim();
 function resolveMinLevel() {
     const env = process.env.OPENCLAW_LOG_LEVEL?.toUpperCase();
     if (env && env in LEVEL_IDS)
@@ -30,6 +32,43 @@ function resolveMinLevel() {
     return LEVEL_IDS[DEFAULT_LOG_LEVEL];
 }
 let minLevelId = resolveMinLevel();
+let verboseMirrorPath = ENV_VERBOSE_LOG
+    ? expandUserPath(ENV_VERBOSE_LOG)
+    : undefined;
+function expandUserPath(p) {
+    const t = p.trim();
+    if (t.startsWith("~/") || t === "~") {
+        return path.join(os.homedir(), t === "~" ? "" : t.slice(2));
+    }
+    return t;
+}
+/**
+ * Optional dedicated plaintext log for the weixin channel (all levels, regardless of
+ * `OPENCLAW_LOG_LEVEL`). Use `OPENCLAW_WEIXIN_LOG_FILE` or `channels.openclaw-weixin.verboseLogFile`.
+ */
+export function setWeixinVerboseLogFilePath(filePath) {
+    verboseMirrorPath = filePath?.trim() ? expandUserPath(filePath) : undefined;
+}
+/** Read `verboseLogFile` from config and apply; call when the monitor starts or config reloads. */
+export function configureWeixinChannelLoggingFromConfig(cfg) {
+    const fromEnv = ENV_VERBOSE_LOG ? expandUserPath(ENV_VERBOSE_LOG) : undefined;
+    if (fromEnv) {
+        verboseMirrorPath = fromEnv;
+        return;
+    }
+    const section = cfg?.channels?.["openclaw-weixin"];
+    if (!section || typeof section !== "object") {
+        verboseMirrorPath = undefined;
+        return;
+    }
+    const raw = section.verboseLogFile;
+    if (typeof raw === "string" && raw.trim()) {
+        verboseMirrorPath = expandUserPath(raw);
+    }
+    else {
+        verboseMirrorPath = undefined;
+    }
+}
 /** Dynamically change the minimum log level at runtime. */
 export function setLogLevel(level) {
     const upper = level.toUpperCase();
@@ -59,11 +98,22 @@ function buildLoggerName(accountId) {
 }
 function writeLog(level, message, accountId) {
     const levelId = LEVEL_IDS[level] ?? LEVEL_IDS.INFO;
-    if (levelId < minLevelId)
-        return;
     const now = new Date();
     const loggerName = buildLoggerName(accountId);
     const prefixedMessage = accountId ? `[${accountId}] ${message}` : message;
+    const mirrorRaw = verboseMirrorPath?.trim();
+    if (mirrorRaw) {
+        const line = `${toLocalISO(now)}\t${level}\t${loggerName}\t${prefixedMessage.replace(/\r?\n/g, "\\n ")}\n`;
+        try {
+            fs.mkdirSync(path.dirname(mirrorRaw), { recursive: true });
+            fs.appendFileSync(mirrorRaw, line, "utf-8");
+        }
+        catch {
+            /* best-effort mirror */
+        }
+    }
+    if (levelId < minLevelId)
+        return;
     const entry = JSON.stringify({
         "0": loggerName,
         "1": prefixedMessage,
