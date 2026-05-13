@@ -72,6 +72,18 @@ By default, DMs can share one session bucket. For **multiple logged-in WeChat ac
 openclaw config set session.dmScope per-account-channel-peer
 ```
 
+## Sending images and files (OpenClaw host)
+
+This plugin declares **`capabilities.media: true`** and implements **`sendMedia`** in the channel layer: it uploads via CDN then sends downstream as **images, videos, or generic file attachments** (aligned with backend `sendmessage` + `media_type`).
+
+To have the assistant send media to the user in chat, route through your host **message tool** (or equivalent outbound payload) with a media field:
+
+- **Local path**: Use an **absolute path** on the gateway machine (e.g. `/tmp/report.pdf`). Avoid `./` or unresolved relative paths.
+- **HTTP(S) URL**: Use a reachable URL; the plugin downloads to a temp file first, then infers kind from extension or response `Content-Type`.
+- Typical **PDF, Office archives, ZIP, audio**, etc. (not `image/*` / `video/*`) go out as **file messages**. Prefer filenames with accurate extensions.
+
+For wire-level details see **Backend API Protocol** (`sendMessage` / CDN upload) below.
+
 ## Backend API Protocol
 
 This plugin communicates with the backend gateway via HTTP JSON API. Developers integrating with their own backend need to implement the following interfaces.

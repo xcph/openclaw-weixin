@@ -53,7 +53,7 @@
       "selectionLabel": "openclaw-weixin",
       "docsPath": "/channels/openclaw-weixin",
       "docsLabel": "openclaw-weixin",
-      "blurb": "Weixin channel",
+      "blurb": "Weixin channel (text + image/video/file outbound)",
       "order": 75
     },
     "install": {

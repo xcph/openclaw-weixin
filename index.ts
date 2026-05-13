@@ -30,7 +30,8 @@ const weixinPluginConfigSchema: OpenClawPluginConfigSchema = {
 export default {
   id: "openclaw-weixin",
   name: "Weixin",
-  description: "Weixin channel (getUpdates long-poll + sendMessage)",
+  description:
+    "Weixin channel (getUpdates long-poll; text + image/video/file outbound via CDN upload)",
   configSchema: weixinPluginConfigSchema,
   register(api: OpenClawPluginApi) {
     // Fail-fast: reject incompatible host versions before any side-effects.

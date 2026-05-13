@@ -71,6 +71,18 @@ openclaw channels login --channel openclaw-weixin
 openclaw config set session.dmScope per-account-channel-peer
 ```
 
+## 发送图片与文件（OpenClaw 智能体）
+
+本插件已对宿主声明 **`capabilities.media: true`**，并在渠道层实现了 **`sendMedia`**：会先走 CDN 上传，再调用下游发送 **图片 / 视频 / 普通文件附件**（与后端 `sendmessage` + `media_type` 能力一致）。
+
+在对话里让模型给用户发媒体时，请通过宿主提供的 **消息（message）工具**（或等价 outbound）附带媒体字段：
+
+- **本机路径**：使用网关机器上的 **绝对路径**（如 `/tmp/report.pdf`、`/home/user/out.png`）。不要使用 `./` 或未解析的相对路径。
+- **HTTP(S) URL**：传入可访问的 `http://` 或 `https://` 链接；插件会先下载到临时目录，再按扩展名或响应头 `Content-Type` 判别类型后发图 / 视频 / 文件消息。
+- 常见 **PDF、Office、ZIP、音频等**（非 `image/*`/`video/*`）会作为 **文件消息**发送；文件名尽量带正确扩展名，便于判别。
+
+详细 HTTP 语义见下文「后端 API 协议」中 `sendMessage` / CDN 上传说明。
+
 ## 后端 API 协议
 
 本插件通过 HTTP JSON API 与后端网关通信。二次开发者若需对接自有后端，需实现以下接口。
