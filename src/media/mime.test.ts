@@ -31,6 +31,21 @@ describe("getMimeFromFilename", () => {
     expect(getMimeFromFilename("archive.TAR.GZ")).toBe("application/gzip");
     expect(getMimeFromFilename("/a/b/package.tgz")).toBe("application/gzip");
   });
+
+  it("maps Office, APK, and log extensions for file outbound", () => {
+    expect(getMimeFromFilename("report.docx")).toBe(
+      "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    );
+    expect(getMimeFromFilename("sheet.xlsx")).toBe(
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    );
+    expect(getMimeFromFilename("deck.pptx")).toBe(
+      "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    );
+    expect(getMimeFromFilename("macro.xlsm")).toBe("application/vnd.ms-excel.sheet.macroEnabled.12");
+    expect(getMimeFromFilename("release.apk")).toBe("application/vnd.android.package-archive");
+    expect(getMimeFromFilename("/var/log/app.log")).toBe("text/plain");
+  });
 });
 
 describe("getExtensionFromMime", () => {
@@ -38,6 +53,8 @@ describe("getExtensionFromMime", () => {
     expect(getExtensionFromMime("image/jpeg")).toBe(".jpg");
     expect(getExtensionFromMime("image/png")).toBe(".png");
     expect(getExtensionFromMime("video/mp4")).toBe(".mp4");
+    expect(getExtensionFromMime("application/vnd.android.package-archive")).toBe(".apk");
+    expect(getExtensionFromMime("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")).toBe(".xlsx");
     expect(getExtensionFromMime("application/pdf")).toBe(".pdf");
   });
 
