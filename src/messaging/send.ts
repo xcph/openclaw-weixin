@@ -10,6 +10,18 @@ import type { UploadedFileInfo } from "../cdn/upload.js";
 
 export { StreamingMarkdownFilter } from "./markdown-filter.js";
 
+/**
+ * CDN upload pipeline stores `aeskey` as hex-encoded raw bytes (see upload.ts).
+ * SendMessage CDNMedia expects `aes_key` as base64(raw key bytes).
+ */
+function aesKeyHexToMediaBase64(hexKey: string): string {
+  const h = hexKey.trim().toLowerCase();
+  if (h.length % 2 !== 0 || !/^[0-9a-f]+$/.test(h)) {
+    throw new Error(`weixin send: invalid uploaded aeskey (expected lowercase hex pairs)`);
+  }
+  return Buffer.from(h, "hex").toString("base64");
+}
+
 function generateClientId(): string {
   return generateId("openclaw-weixin");
 }
@@ -167,7 +179,7 @@ export async function sendImageMessageWeixin(params: {
     image_item: {
       media: {
         encrypt_query_param: uploaded.downloadEncryptedQueryParam,
-        aes_key: Buffer.from(uploaded.aeskey).toString("base64"),
+        aes_key: aesKeyHexToMediaBase64(uploaded.aeskey),
         encrypt_type: 1,
       },
       mid_size: uploaded.fileSizeCiphertext,
@@ -198,7 +210,7 @@ export async function sendVideoMessageWeixin(params: {
     video_item: {
       media: {
         encrypt_query_param: uploaded.downloadEncryptedQueryParam,
-        aes_key: Buffer.from(uploaded.aeskey).toString("base64"),
+        aes_key: aesKeyHexToMediaBase64(uploaded.aeskey),
         encrypt_type: 1,
       },
       video_size: uploaded.fileSizeCiphertext,
@@ -229,7 +241,7 @@ export async function sendFileMessageWeixin(params: {
     file_item: {
       media: {
         encrypt_query_param: uploaded.downloadEncryptedQueryParam,
-        aes_key: Buffer.from(uploaded.aeskey).toString("base64"),
+        aes_key: aesKeyHexToMediaBase64(uploaded.aeskey),
         encrypt_type: 1,
       },
       file_name: fileName,

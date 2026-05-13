@@ -25,6 +25,12 @@ describe("getMimeFromFilename", () => {
   it("handles paths with directories", () => {
     expect(getMimeFromFilename("/path/to/photo.png")).toBe("image/png");
   });
+
+  it("detects gzip tarball (.tar.gz) not only trailing .gz", () => {
+    expect(getMimeFromFilename("/tmp/files.tar.gz")).toBe("application/gzip");
+    expect(getMimeFromFilename("archive.TAR.GZ")).toBe("application/gzip");
+    expect(getMimeFromFilename("/a/b/package.tgz")).toBe("application/gzip");
+  });
 });
 
 describe("getExtensionFromMime", () => {

@@ -13,6 +13,7 @@ const EXTENSION_TO_MIME: Record<string, string> = {
   ".zip": "application/zip",
   ".tar": "application/x-tar",
   ".gz": "application/gzip",
+  ".tgz": "application/gzip",
   ".mp3": "audio/mpeg",
   ".ogg": "audio/ogg",
   ".wav": "audio/wav",
@@ -54,6 +55,10 @@ const MIME_TO_EXTENSION: Record<string, string> = {
 
 /** Get MIME type from filename extension. Returns "application/octet-stream" for unknown extensions. */
 export function getMimeFromFilename(filename: string): string {
+  const lower = filename.toLowerCase();
+  if (lower.endsWith(".tar.gz")) {
+    return "application/gzip";
+  }
   const ext = path.extname(filename).toLowerCase();
   return EXTENSION_TO_MIME[ext] ?? "application/octet-stream";
 }

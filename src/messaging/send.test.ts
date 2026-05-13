@@ -210,10 +210,33 @@ describe("sendFileMessageWeixin", () => {
     expect(result.messageId).toBeDefined();
   });
 
+  it("encodes aes_key from uploaded hex AES key into base64(raw bytes)", async () => {
+    mockSendMessageApi.mockResolvedValue(undefined);
+    await sendFileMessageWeixin({
+      to: "user1",
+      text: "",
+      fileName: "bundle.tar.gz",
+      uploaded: makeUploadedFileInfo({
+        aeskey: "0123456789abcdeffedcba9876543210",
+      }),
+      opts: { baseUrl: "https://api.com", contextToken: "ctx" },
+    });
+    expect(mockSendMessageApi).toHaveBeenCalledTimes(1);
+    const req = mockSendMessageApi.mock.calls[0][0].body.msg.item_list?.[0];
+    const b64 = req?.file_item?.media?.aes_key;
+    expect(b64).toBeDefined();
+    expect(Buffer.from(String(b64), "base64")).toEqual(
+      Buffer.from("0123456789abcdeffedcba9876543210", "hex"),
+    );
+  });
+
   it("sends file message", async () => {
     mockSendMessageApi.mockResolvedValue(undefined);
     const result = await sendFileMessageWeixin({
-      to: "user1", text: "see attached", fileName: "doc.pdf", uploaded: makeUploadedFileInfo(),
+      to: "user1",
+      text: "see attached",
+      fileName: "doc.pdf",
+      uploaded: makeUploadedFileInfo(),
       opts: { baseUrl: "https://api.com", contextToken: "ctx" },
     });
     expect(result.messageId).toBeDefined();
