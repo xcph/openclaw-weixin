@@ -115,18 +115,39 @@ export async function startWeixinLoginWithQr(opts) {
     }
 }
 const MAX_QR_REFRESH_COUNT = 3;
+function resolveWaitSessionKey(requested) {
+    const key = requested.trim();
+    if (key && activeLogins.has(key)) {
+        return key;
+    }
+    const freshKeys = [...activeLogins.entries()]
+        .filter(([, login]) => isLoginFresh(login))
+        .map(([k]) => k);
+    if (freshKeys.length === 1) {
+        const resolved = freshKeys[0];
+        if (key && key !== resolved) {
+            logger.warn(`waitForWeixinLogin: sessionKey=${key} not found; using sole active login ${resolved}`);
+        }
+        else if (!key) {
+            logger.info(`waitForWeixinLogin: empty sessionKey; using sole active login ${resolved}`);
+        }
+        return resolved;
+    }
+    return key;
+}
 export async function waitForWeixinLogin(opts) {
-    let activeLogin = activeLogins.get(opts.sessionKey);
+    const sessionKey = resolveWaitSessionKey(opts.sessionKey);
+    let activeLogin = activeLogins.get(sessionKey);
     if (!activeLogin) {
-        logger.warn(`waitForWeixinLogin: no active login sessionKey=${opts.sessionKey}`);
+        logger.warn(`waitForWeixinLogin: no active login sessionKey=${sessionKey}`);
         return {
             connected: false,
             message: "当前没有进行中的登录，请先发起登录。",
         };
     }
     if (!isLoginFresh(activeLogin)) {
-        logger.warn(`waitForWeixinLogin: login QR expired sessionKey=${opts.sessionKey}`);
-        activeLogins.delete(opts.sessionKey);
+        logger.warn(`waitForWeixinLogin: login QR expired sessionKey=${sessionKey}`);
+        activeLogins.delete(sessionKey);
         return {
             connected: false,
             message: "二维码已过期，请重新生成。",
