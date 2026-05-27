@@ -37,6 +37,16 @@ import { sanitizeAssistantOutboundForChannel } from "./outbound-privacy.js";
 const MEDIA_OUTBOUND_TEMP_DIR = path.join(resolvePreferredOpenClawTmpDir(), "weixin/media/outbound-temp");
 
 /** When tool summaries are disabled, still deliver exec-approval envelopes (matches host `resolveToolDeliveryPayload`). */
+function isTypingRequestTimeout(err: unknown): boolean {
+  if (!err || typeof err !== "object") {
+    return false;
+  }
+  const rec = err as { name?: unknown; message?: unknown };
+  const name = typeof rec.name === "string" ? rec.name : "";
+  const message = typeof rec.message === "string" ? rec.message : "";
+  return name === "AbortError" && /request timeout/i.test(message);
+}
+
 function shouldSuppressToolOutbound(
   payload: { channelData?: Record<string, unknown> },
   showTools: boolean,
@@ -343,8 +353,21 @@ export async function processOneMessage(
             },
           })
       : async () => {},
-    onStartError: (err) => deps.log(`[weixin] typing send error: ${String(err)}`),
-    onStopError: (err) => deps.log(`[weixin] typing cancel error: ${String(err)}`),
+    onStartError: (err) => {
+      // Typing is best-effort; the circuit breaker (maxConsecutiveFailures) and
+      // TTL in createTypingCallbacks already cap retries. Suppress the routine
+      // 10s AbortError that fires when the LLM is slow so the log stays useful.
+      if (isTypingRequestTimeout(err)) {
+        return;
+      }
+      deps.log(`[weixin] typing send error: ${String(err)}`);
+    },
+    onStopError: (err) => {
+      if (isTypingRequestTimeout(err)) {
+        return;
+      }
+      deps.log(`[weixin] typing cancel error: ${String(err)}`);
+    },
     keepaliveIntervalMs: 5000,
   });
 
