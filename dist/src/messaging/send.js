@@ -41,6 +41,7 @@ export async function sendMessageWeixin(params) {
     const { to, text, opts } = params;
   // 统一回报日志(对齐 xim ◀/▶ 格式):出站正文预览。
   logger.info(`▶ send to=${to} (${String(text ?? "").length} chars): ${String(text ?? "").replace(/\s+/g, " ").slice(0, 120)}`);
+  console.log(`[openclaw-weixin] ▶ send to=${to} (${String(text ?? "").length} chars): ${String(text ?? "").replace(/\s+/g, " ").slice(0, 120)}`);
     if (!opts.contextToken) {
         logger.warn(`sendMessageWeixin: contextToken missing for to=${to}, sending without context`);
     }

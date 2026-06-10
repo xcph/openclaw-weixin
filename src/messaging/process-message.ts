@@ -280,6 +280,9 @@ export async function processOneMessage(
   logger.info(
     `◀ recv from=${finalized.From} to=${finalized.To} (${(finalized.Body ?? "").length} chars) hasMedia=${Boolean(finalized.MediaPath ?? finalized.MediaUrl)}: ${String(finalized.Body ?? "").replace(/\s+/g, " ").slice(0, 120)}`,
   );
+  // weixin 的 logger 落独立文件(/tmp/openclaw/*.log),主 docker logs 看不到;
+  // 收发关键日志同时打到 stdout,与 xim/nim/qqbot 一致可见。
+  console.log(`[openclaw-weixin] ◀ recv from=${finalized.From} (${(finalized.Body ?? "").length} chars): ${String(finalized.Body ?? "").replace(/\s+/g, " ").slice(0, 120)}`);
   logger.debug(`inbound context: ${redactBody(JSON.stringify(finalized))}`);
 
   await deps.channelRuntime.session.recordInboundSession({
