@@ -1,5 +1,9 @@
 # 变更日志
 
+## 2.1.8 (2026-06-10)
+
+- 统一收发 ◀/▶ 日志 + 双写 stdout(主 docker logs 可见)
+
 [English](CHANGELOG.md)
 
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/) 格式。
