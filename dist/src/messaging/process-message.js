@@ -175,7 +175,7 @@ export async function processOneMessage(full, deps) {
         agentId: route.agentId,
     });
     const finalized = deps.channelRuntime.reply.finalizeInboundContext(ctx);
-    logger.info(`inbound: from=${finalized.From} to=${finalized.To} bodyLen=${(finalized.Body ?? "").length} hasMedia=${Boolean(finalized.MediaPath ?? finalized.MediaUrl)}`);
+    logger.info(`◀ recv from=${finalized.From} to=${finalized.To} (${(finalized.Body ?? "").length} chars) hasMedia=${Boolean(finalized.MediaPath ?? finalized.MediaUrl)}: ${String(finalized.Body ?? "").replace(/\s+/g, " ").slice(0, 120)}`);
     logger.debug(`inbound context: ${redactBody(JSON.stringify(finalized))}`);
     await deps.channelRuntime.session.recordInboundSession({
         storePath,
