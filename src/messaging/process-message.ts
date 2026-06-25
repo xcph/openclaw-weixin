@@ -17,6 +17,7 @@ import { downloadRemoteImageToTemp } from "../cdn/upload.js";
 import { downloadMediaFromItem } from "../media/media-download.js";
 import { logger } from "../util/logger.js";
 import { redactBody, redactToken } from "../util/redact.js";
+import { runWithRequestContext } from "../request-context.js";
 
 import { isDebugMode } from "./debug-mode.js";
 import { sendWeixinErrorNotice } from "./error-notice.js";
@@ -500,28 +501,34 @@ export async function processOneMessage(
 
   logger.debug(`dispatchReplyFromConfig: starting agentId=${route.agentId ?? "(none)"}`);
   try {
-    await deps.channelRuntime.reply.withReplyDispatcher({
-      dispatcher,
-      run: () =>
-        deps.channelRuntime.reply.dispatchReplyFromConfig({
-          ctx: finalized,
-          cfg: deps.config,
+    // 建立请求级上下文：作用域内的 agent 运行与任意 tool execute（如 weixin_remind）
+    // 都能拿到当前会话的投递地址与账户，无需模型手填、无并发竞态。
+    await runWithRequestContext(
+      { target: full.from_user_id ?? "", accountId: deps.accountId },
+      () =>
+        deps.channelRuntime.reply.withReplyDispatcher({
           dispatcher,
-          replyOptions: {
-            ...replyOptions,
-            disableBlockStreaming: true,
-            /** Host embedded run defaults to verboseLevel for tool summaries when unset; align with channel config. */
-            shouldEmitToolResult: () => resolvedAccount.showTools,
-            shouldEmitToolOutput: () => resolvedAccount.showTools,
-            ...(reasoningBroadcast
-              ? {
-                  onReasoningStream: reasoningBroadcast.onReasoningStream,
-                  onReasoningEnd: reasoningBroadcast.onReasoningEnd,
-                }
-              : {}),
-          } as typeof replyOptions,
+          run: () =>
+            deps.channelRuntime.reply.dispatchReplyFromConfig({
+              ctx: finalized,
+              cfg: deps.config,
+              dispatcher,
+              replyOptions: {
+                ...replyOptions,
+                disableBlockStreaming: true,
+                /** Host embedded run defaults to verboseLevel for tool summaries when unset; align with channel config. */
+                shouldEmitToolResult: () => resolvedAccount.showTools,
+                shouldEmitToolOutput: () => resolvedAccount.showTools,
+                ...(reasoningBroadcast
+                  ? {
+                      onReasoningStream: reasoningBroadcast.onReasoningStream,
+                      onReasoningEnd: reasoningBroadcast.onReasoningEnd,
+                    }
+                  : {}),
+              } as typeof replyOptions,
+            }),
         }),
-    });
+    );
     logger.debug(`dispatchReplyFromConfig: done agentId=${route.agentId ?? "(none)"}`);
   } catch (err) {
     logger.error(

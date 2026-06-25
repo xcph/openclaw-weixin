@@ -5,6 +5,14 @@
     "onStartup": false
   },
   "channels": ["openclaw-weixin"],
+  "skills": ["skills/weixin-remind"],
+  "capabilities": {
+    "proactiveMessaging": true,
+    "cronJobs": true
+  },
+  "contracts": {
+    "tools": ["weixin_remind"]
+  },
   "configSchema": {
     "type": "object",
     "additionalProperties": false,

@@ -127,6 +127,47 @@ export async function monitorWeixinProvider(opts) {
     let credentialFingerprint = "";
     /** Counts `-14` streak without a successful poll — cleared on success or credential change. */
     let sessionExpiryRecoveryAttempts = 0;
+    /**
+     * Per-message-id dedup. The -14 recovery path clears get_updates_buf and the
+     * next long-poll replays any messages the server still considers unread, so
+     * the same message can land in processOneMessage twice and each replay would
+     * otherwise create a fresh session + reply. We remember recent message keys
+     * for a short TTL to short-circuit replays without resorting to disk state.
+     */
+    const seenMessageKeys = new Map();
+    const SEEN_MESSAGE_TTL_MS = 10 * 60_000;
+    const SEEN_MESSAGE_MAX_ENTRIES = 1000;
+    const resolveSeenMessageKey = (full) => {
+        if (typeof full.message_id === "number" && Number.isFinite(full.message_id)) {
+            return `id:${full.message_id}`;
+        }
+        if (typeof full.seq === "number" && Number.isFinite(full.seq)) {
+            return `seq:${full.seq}`;
+        }
+        if (full.from_user_id && typeof full.create_time_ms === "number") {
+            return `t:${full.from_user_id}:${full.create_time_ms}`;
+        }
+        return undefined;
+    };
+    const recordSeenMessageKey = (key, now) => {
+        if (seenMessageKeys.size >= SEEN_MESSAGE_MAX_ENTRIES) {
+            const oldestKey = seenMessageKeys.keys().next().value;
+            if (oldestKey !== undefined) {
+                seenMessageKeys.delete(oldestKey);
+            }
+        }
+        seenMessageKeys.set(key, now);
+    };
+    const pruneSeenMessageKeys = (now) => {
+        for (const [k, ts] of seenMessageKeys) {
+            if (now - ts > SEEN_MESSAGE_TTL_MS) {
+                seenMessageKeys.delete(k);
+            }
+            else {
+                break;
+            }
+        }
+    };
     /** First iteration only — settle credentials file visibility after QR login + channels.start. */
     let appliedFreshCredentialDelay = false;
     while (!abortSignal?.aborted) {
@@ -218,6 +259,15 @@ export async function monitorWeixinProvider(opts) {
                 aLog.info(`inbound message: from=${full.from_user_id} types=${full.item_list?.map((i) => i.type).join(",") ?? "none"}`);
                 const now = Date.now();
                 setStatus?.({ accountId, lastEventAt: now, lastInboundAt: now });
+                pruneSeenMessageKeys(now);
+                const seenKey = resolveSeenMessageKey(full);
+                if (seenKey !== undefined && seenMessageKeys.has(seenKey)) {
+                    aLog.warn(`skipping duplicate inbound message (key=${seenKey}) — likely -14 cursor replay`);
+                    continue;
+                }
+                if (seenKey !== undefined) {
+                    recordSeenMessageKey(seenKey, now);
+                }
                 // allowFrom filtering is delegated to processOneMessage via the framework
                 // authorization pipeline (resolveSenderCommandAuthorizationWithRuntime).
                 const fromUserId = full.from_user_id ?? "";

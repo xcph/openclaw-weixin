@@ -110,7 +110,7 @@ export const weixinPlugin = {
         selectionLabel: "openclaw-weixin (long-poll)",
         docsPath: "/channels/openclaw-weixin",
         docsLabel: "openclaw-weixin",
-        blurb: "getUpdates long-poll upstream, sendMessage downstream; token auth.",
+        blurb: "getUpdates long-poll; send text or media (image / video / file attachment) downstream; token auth.",
         order: 75,
     },
     configSchema: {
@@ -156,7 +156,8 @@ export const weixinPlugin = {
     },
     agentPrompt: {
         messageToolHints: () => [
-            "To send an image or file to the current user, use the message tool with action='send' and set 'media' to a local file path or a remote URL. You do not need to specify 'to' — the current conversation recipient is used automatically.",
+            "To send an image, video, or file (PDF/ZIP/doc/xlsx/mp4, etc.) to the current user, use the message tool with action='send' and set 'media' (or the host's mediaUrl field) to a local absolute file path or an https:// URL. You do not need to specify 'to' — the current conversation recipient is used automatically.",
+            "Non-image attachments are routed as WeChat file messages from extension / Content-Type — Office (.doc/.docx/.xls/.xlsx/.ppt/.pptx and macro/template variants), PDF, APK, .log/plain text, ZIP/tar gzip, audio, etc.; unknown extensions still send as octet-stream file.",
             "When the user asks you to find an image from the web, use a web search or browser tool to find a suitable image URL, then send it using the message tool with 'media' set to that HTTPS image URL — do NOT download the image first.",
             "IMPORTANT: When generating or saving a file to send, always use an absolute path (e.g. /tmp/photo.png), never a relative path like ./photo.png. Relative paths cannot be resolved and the file will not be delivered.",
             "IMPORTANT: When creating a cron job (scheduled task) for the current Weixin user, you MUST set delivery.to to the user's Weixin ID (the xxx@im.wechat address from the current conversation) AND set delivery.accountId to the current AccountId. Without an explicit 'to', the cron delivery will fail with 'requires target'. Without an explicit 'accountId', the message may be sent from the wrong bot account. Example: delivery: { mode: 'announce', channel: 'openclaw-weixin', to: '<current_user_id@im.wechat>', accountId: '<current_AccountId>' }.",

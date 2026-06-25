@@ -3,6 +3,17 @@ import { logger } from "../util/logger.js";
 import { generateId } from "../util/random.js";
 import { MessageItemType, MessageState, MessageType } from "../api/types.js";
 export { StreamingMarkdownFilter } from "./markdown-filter.js";
+/**
+ * CDN upload pipeline stores `aeskey` as hex-encoded raw bytes (see upload.ts).
+ * SendMessage CDNMedia expects `aes_key` as base64(raw key bytes).
+ */
+function aesKeyHexToMediaBase64(hexKey) {
+    const h = hexKey.trim().toLowerCase();
+    if (h.length % 2 !== 0 || !/^[0-9a-f]+$/.test(h)) {
+        throw new Error(`weixin send: invalid uploaded aeskey (expected lowercase hex pairs)`);
+    }
+    return Buffer.from(h, "hex").toString("base64");
+}
 function generateClientId() {
     return generateId("openclaw-weixin");
 }
@@ -39,9 +50,9 @@ function buildSendMessageReq(params) {
  */
 export async function sendMessageWeixin(params) {
     const { to, text, opts } = params;
-  // 统一回报日志(对齐 xim ◀/▶ 格式):出站正文预览。
-  logger.info(`▶ send to=${to} (${String(text ?? "").length} chars): ${String(text ?? "").replace(/\s+/g, " ").slice(0, 120)}`);
-  console.log(`[openclaw-weixin] ▶ send to=${to} (${String(text ?? "").length} chars): ${String(text ?? "").replace(/\s+/g, " ").slice(0, 120)}`);
+    // 统一回报日志(对齐 xim ◀/▶ 格式):出站正文预览。
+    logger.info(`▶ send to=${to} (${String(text ?? "").length} chars): ${String(text ?? "").replace(/\s+/g, " ").slice(0, 120)}`);
+    console.log(`[openclaw-weixin] ▶ send to=${to} (${String(text ?? "").length} chars): ${String(text ?? "").replace(/\s+/g, " ").slice(0, 120)}`);
     if (!opts.contextToken) {
         logger.warn(`sendMessageWeixin: contextToken missing for to=${to}, sending without context`);
     }
@@ -127,7 +138,7 @@ export async function sendImageMessageWeixin(params) {
         image_item: {
             media: {
                 encrypt_query_param: uploaded.downloadEncryptedQueryParam,
-                aes_key: Buffer.from(uploaded.aeskey).toString("base64"),
+                aes_key: aesKeyHexToMediaBase64(uploaded.aeskey),
                 encrypt_type: 1,
             },
             mid_size: uploaded.fileSizeCiphertext,
@@ -150,7 +161,7 @@ export async function sendVideoMessageWeixin(params) {
         video_item: {
             media: {
                 encrypt_query_param: uploaded.downloadEncryptedQueryParam,
-                aes_key: Buffer.from(uploaded.aeskey).toString("base64"),
+                aes_key: aesKeyHexToMediaBase64(uploaded.aeskey),
                 encrypt_type: 1,
             },
             video_size: uploaded.fileSizeCiphertext,
@@ -173,7 +184,7 @@ export async function sendFileMessageWeixin(params) {
         file_item: {
             media: {
                 encrypt_query_param: uploaded.downloadEncryptedQueryParam,
-                aes_key: Buffer.from(uploaded.aeskey).toString("base64"),
+                aes_key: aesKeyHexToMediaBase64(uploaded.aeskey),
                 encrypt_type: 1,
             },
             file_name: fileName,

@@ -10,6 +10,7 @@ import { downloadRemoteImageToTemp } from "../cdn/upload.js";
 import { downloadMediaFromItem } from "../media/media-download.js";
 import { logger } from "../util/logger.js";
 import { redactBody, redactToken } from "../util/redact.js";
+import { runWithRequestContext } from "../request-context.js";
 import { isDebugMode } from "./debug-mode.js";
 import { sendWeixinErrorNotice } from "./error-notice.js";
 import { setContextToken, weixinMessageToMsgContext, getContextTokenFromMsgContext, isMediaItem, } from "./inbound.js";
@@ -21,6 +22,15 @@ import { createWeixinReasoningBroadcast } from "./reasoning-broadcast.js";
 import { sanitizeAssistantOutboundForChannel } from "./outbound-privacy.js";
 const MEDIA_OUTBOUND_TEMP_DIR = path.join(resolvePreferredOpenClawTmpDir(), "weixin/media/outbound-temp");
 /** When tool summaries are disabled, still deliver exec-approval envelopes (matches host `resolveToolDeliveryPayload`). */
+function isTypingRequestTimeout(err) {
+    if (!err || typeof err !== "object") {
+        return false;
+    }
+    const rec = err;
+    const name = typeof rec.name === "string" ? rec.name : "";
+    const message = typeof rec.message === "string" ? rec.message : "";
+    return name === "AbortError" && /request timeout/i.test(message);
+}
 function shouldSuppressToolOutbound(payload, showTools) {
     if (showTools) {
         return false;
@@ -176,6 +186,8 @@ export async function processOneMessage(full, deps) {
     });
     const finalized = deps.channelRuntime.reply.finalizeInboundContext(ctx);
     logger.info(`◀ recv from=${finalized.From} to=${finalized.To} (${(finalized.Body ?? "").length} chars) hasMedia=${Boolean(finalized.MediaPath ?? finalized.MediaUrl)}: ${String(finalized.Body ?? "").replace(/\s+/g, " ").slice(0, 120)}`);
+    // weixin 的 logger 落独立文件(/tmp/openclaw/*.log),主 docker logs 看不到;
+    // 收发关键日志同时打到 stdout,与 xim/nim/qqbot 一致可见。
     console.log(`[openclaw-weixin] ◀ recv from=${finalized.From} (${(finalized.Body ?? "").length} chars): ${String(finalized.Body ?? "").replace(/\s+/g, " ").slice(0, 120)}`);
     logger.debug(`inbound context: ${redactBody(JSON.stringify(finalized))}`);
     await deps.channelRuntime.session.recordInboundSession({
@@ -240,8 +252,21 @@ export async function processOneMessage(full, deps) {
                 },
             })
             : async () => { },
-        onStartError: (err) => deps.log(`[weixin] typing send error: ${String(err)}`),
-        onStopError: (err) => deps.log(`[weixin] typing cancel error: ${String(err)}`),
+        onStartError: (err) => {
+            // Typing is best-effort; the circuit breaker (maxConsecutiveFailures) and
+            // TTL in createTypingCallbacks already cap retries. Suppress the routine
+            // 10s AbortError that fires when the LLM is slow so the log stays useful.
+            if (isTypingRequestTimeout(err)) {
+                return;
+            }
+            deps.log(`[weixin] typing send error: ${String(err)}`);
+        },
+        onStopError: (err) => {
+            if (isTypingRequestTimeout(err)) {
+                return;
+            }
+            deps.log(`[weixin] typing cancel error: ${String(err)}`);
+        },
         keepaliveIntervalMs: 5000,
     });
     /** Delivery records populated synchronously at deliver() entry, safe to read in finally. */
@@ -357,7 +382,9 @@ export async function processOneMessage(full, deps) {
     });
     logger.debug(`dispatchReplyFromConfig: starting agentId=${route.agentId ?? "(none)"}`);
     try {
-        await deps.channelRuntime.reply.withReplyDispatcher({
+        // 建立请求级上下文：作用域内的 agent 运行与任意 tool execute（如 weixin_remind）
+        // 都能拿到当前会话的投递地址与账户，无需模型手填、无并发竞态。
+        await runWithRequestContext({ target: full.from_user_id ?? "", accountId: deps.accountId }, () => deps.channelRuntime.reply.withReplyDispatcher({
             dispatcher,
             run: () => deps.channelRuntime.reply.dispatchReplyFromConfig({
                 ctx: finalized,
@@ -377,7 +404,7 @@ export async function processOneMessage(full, deps) {
                         : {}),
                 },
             }),
-        });
+        }));
         logger.debug(`dispatchReplyFromConfig: done agentId=${route.agentId ?? "(none)"}`);
     }
     catch (err) {
