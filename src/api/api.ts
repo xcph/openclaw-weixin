@@ -16,7 +16,9 @@ import type {
   GetUpdatesReq,
   GetUpdatesResp,
   SendMessageReq,
+  SendMessageResp,
   SendTypingReq,
+  SendTypingResp,
   GetConfigResp,
 } from "./types.js";
 
@@ -374,11 +376,36 @@ export async function getUploadUrl(
   return resp;
 }
 
+/**
+ * 解析 API JSON 返回,服务端用 `ret !== 0` 表示业务级失败时抛错。
+ *
+ * 这些失败 HTTP 仍是 200(例:sendMessage 超出会话窗口 → `{"ret":-2}`),不查 body
+ * 就会把被丢弃的消息当成功。返回解析后的对象(成功时)。
+ */
+function assertApiOk<T extends { ret?: number; errcode?: number; errmsg?: string }>(
+  rawText: string,
+  label: string,
+): T {
+  let resp: T;
+  try {
+    resp = (rawText.trim() ? JSON.parse(rawText) : {}) as T;
+  } catch {
+    throw new Error(`${label}: non-JSON response: ${rawText.slice(0, 200)}`);
+  }
+  if (typeof resp.ret === "number" && resp.ret !== 0) {
+    const parts = [`ret=${resp.ret}`];
+    if (typeof resp.errcode === "number") parts.push(`errcode=${resp.errcode}`);
+    if (resp.errmsg) parts.push(resp.errmsg);
+    throw new Error(`${label}: ${parts.join(" ")}`);
+  }
+  return resp;
+}
+
 /** Send a single message downstream. */
 export async function sendMessage(
   params: WeixinApiOptions & { body: SendMessageReq },
 ): Promise<void> {
-  await apiPostFetch({
+  const rawText = await apiPostFetch({
     baseUrl: params.baseUrl,
     endpoint: "ilink/bot/sendmessage",
     body: JSON.stringify({ ...params.body, base_info: buildBaseInfo() }),
@@ -386,6 +413,8 @@ export async function sendMessage(
     timeoutMs: params.timeoutMs ?? DEFAULT_API_TIMEOUT_MS,
     label: "sendMessage",
   });
+  // HTTP 200 但 ret!=0(如 -2 超出会话窗口)= 服务端丢弃 → 抛错,让上层落 failed 日志/告警/重试。
+  assertApiOk<SendMessageResp>(rawText, "sendMessage");
 }
 
 /** Fetch bot config (includes typing_ticket) for a given user. */

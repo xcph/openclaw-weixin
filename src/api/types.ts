@@ -195,7 +195,13 @@ export interface SendMessageReq {
 }
 
 export interface SendMessageResp {
-  // empty
+  /**
+   * 0 或缺省 = 成功。非 0 = 服务端业务级失败,HTTP 仍是 200。
+   * 例:-2 = 超出会话窗口/无法推送(用户长时间未互动后,iLink 静默丢弃)。
+   */
+  ret?: number;
+  errcode?: number;
+  errmsg?: string;
 }
 
 /** Typing status: 1 = typing (default), 2 = cancel typing. */
