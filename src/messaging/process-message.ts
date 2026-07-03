@@ -535,6 +535,13 @@ export async function processOneMessage(
                 /** Host embedded run defaults to verboseLevel for tool summaries when unset; align with channel config. */
                 shouldEmitToolResult: () => resolvedAccount.showTools,
                 shouldEmitToolOutput: () => resolvedAccount.showTools,
+                /**
+                 * 根因修法:showTools=false 时,让核心 resolveToolErrorWarningPolicy 直接
+                 * showWarning:false —— 从源头不生成 '⚠️ 🛠️ … failed' 工具失败告警(否则它会
+                 * 以 kind:'final' 的 isError 负载投递,绕过 deliver 的 kind 门控)。与出站侧
+                 * isToolFailureWarning 抑制形成双保险。
+                 */
+                suppressToolErrorWarnings: resolvedAccount.showTools === false,
                 ...(reasoningBroadcast
                   ? {
                       onReasoningStream: reasoningBroadcast.onReasoningStream,
