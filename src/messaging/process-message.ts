@@ -67,6 +67,17 @@ function shouldSuppressToolOutbound(
   return true;
 }
 
+/**
+ * 核心侧的"工具失败告警"(如 `⚠️ 🛠️ run python3 … failed: …`)是作为 dispatch
+ * kind `final` 的结构化 isError 负载投递的(openclaw payloads.ts buildEmbeddedRunPayloads),
+ * 不是 kind `tool`,故不会被上面按 kind==="tool" 的门控拦住。这些告警本质仍是工具相关输出,
+ * `showTools=false` 时不应泄漏到微信。约定:核心侧此类失败行统一以 "⚠️ 🛠️" 开头
+ * (见 openclaw isToolFailureLine)。
+ */
+export function isToolFailureWarning(payload: { text?: string }): boolean {
+  return /^\s*⚠️\s*🛠️/u.test(payload.text ?? "");
+}
+
 /** Dependencies for processOneMessage, injected by the monitor loop. */
 export type ProcessMessageDeps = {
   accountId: string;
@@ -383,9 +394,14 @@ export async function processOneMessage(
       humanDelay,
       typingCallbacks,
       deliver: async (payload, info) => {
-        if (info.kind === "tool" && shouldSuppressToolOutbound(payload, resolvedAccount.showTools)) {
+        // showTools=false 时抑制:① kind==="tool" 的工具汇总;② 任意 kind(含 final)
+        //   以 "⚠️ 🛠️" 开头的工具失败告警(核心侧作为 isError final 负载投递,会绕过 ① )。
+        if (
+          shouldSuppressToolOutbound(payload, resolvedAccount.showTools) &&
+          (info.kind === "tool" || isToolFailureWarning(payload))
+        ) {
           logger.debug(
-            `outbound: skip tool summary (showTools=false) to=${ctx.To} contextToken=${redactToken(contextToken)}`,
+            `outbound: skip tool output (showTools=false, kind=${info.kind}) to=${ctx.To} contextToken=${redactToken(contextToken)}`,
           );
           return;
         }
